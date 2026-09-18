@@ -44,6 +44,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--exit-after", type=float, default=0.0, metavar="SECONDS", help="quit automatically after N seconds (testing)")
     p.add_argument("--uninstall", action="store_true", help="uninstall Glimpse (Windows; used by Add/Remove Programs)")
     p.add_argument("--silent", action="store_true", help="no prompts (for --uninstall)")
+    p.add_argument("--check-updates", action="store_true", help="check the GitHub repo for a newer release")
+    p.add_argument("--json", dest="json_out", action="store_true", help="machine-readable output (with --check-updates)")
     p.add_argument("--verbose", action="store_true", help="debug logging")
     return p.parse_args(argv)
 
@@ -58,6 +60,7 @@ def wants_cli(args: argparse.Namespace) -> bool:
         or args.songid
         or args.capture
         or args.uninstall
+        or args.check_updates
     )
 
 
@@ -119,6 +122,8 @@ def run(args: argparse.Namespace) -> int:
         from .uninstall import run_uninstall
 
         return run_uninstall(silent=bool(args.silent))
+    if args.check_updates:
+        return cmd_check_updates(args)
     if args.selftest:
         return cmd_selftest(args)
     if args.ocr:
@@ -184,6 +189,49 @@ def cmd_capture(args: argparse.Namespace) -> int:
     img.save(str(out), "PNG")
     print(str(out))
     del app
+    return 0
+
+
+def cmd_check_updates(args: argparse.Namespace) -> int:
+    from .config import Settings
+    from .update import UpdateError, check_for_update, current_version, releases_page
+
+    repo = (Settings.load().update_repo or "Zcc09/Glimpse").strip()
+    cur = current_version()
+    payload = {"repo": repo, "current": cur, "update_available": False, "latest": None, "error": None}
+    try:
+        info = check_for_update(repo, current=cur)
+    except UpdateError as e:
+        payload["error"] = str(e)
+        if args.json_out:
+            _safe_print(json.dumps(payload, indent=2))
+        else:
+            _safe_print(f"update check failed: {e}")
+        return 2
+    if info is None:
+        if args.json_out:
+            _safe_print(json.dumps(payload, indent=2))
+        else:
+            _safe_print(f"{cur} is the latest version ({repo})")
+        return 0
+    payload.update(
+        {
+            "update_available": True,
+            "latest": {
+                "tag": info.tag,
+                "version": info.version,
+                "title": info.title,
+                "page_url": info.page_url,
+                "published_at": info.published_at,
+                "assets": [a.name for a in info.assets],
+            },
+        }
+    )
+    if args.json_out:
+        _safe_print(json.dumps(payload, indent=2))
+    else:
+        _safe_print(f"update available: {info.tag} (you have {cur})")
+        _safe_print(info.page_url or releases_page(repo))
     return 0
 
 

@@ -184,6 +184,9 @@ class Settings:
     autostart: bool = False
     show_toasts: bool = True
     first_run_done: bool = False
+    # updates
+    check_updates_on_start: bool = True
+    update_repo: str = "Zcc09/Glimpse"
 
     # -------------------------------------------------------------- io
     @classmethod

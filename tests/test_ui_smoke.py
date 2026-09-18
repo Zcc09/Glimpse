@@ -14,7 +14,10 @@ class StubController:
     """Stands in for GlimpseApp: records calls, touches no system resources."""
 
     def __init__(self):
+        from glimpse.config import Settings
+
         self.calls: list[tuple] = []
+        self.settings = Settings()
 
     def notify(self, *a, **k):
         self.calls.append(("notify", a, k))
@@ -39,6 +42,24 @@ class StubController:
 
     def identify_song(self, seconds=None):
         self.calls.append(("identify_song",))
+
+    def start_capture(self, immediate=None):
+        self.calls.append(("start_capture", immediate))
+
+    def show_history(self):
+        self.calls.append(("show_history",))
+
+    def show_settings(self):
+        self.calls.append(("show_settings",))
+
+    def check_for_updates(self, interactive=True):
+        self.calls.append(("check_for_updates", interactive))
+
+    def show_update_dialog(self, info):
+        self.calls.append(("show_update_dialog", info.tag))
+
+    def quit(self):
+        self.calls.append(("quit",))
 
     def apply_settings(self, settings):
         self.calls.append(("apply_settings",))
@@ -149,7 +170,66 @@ def test_settings_window_collects_defaults(app, glimpse_home):
     assert collected is not None
     assert collected.hotkeys["capture"] == "Ctrl+Alt+L"
     assert collected.default_action == "text"
+    assert collected.check_updates_on_start is True
+    assert collected.update_repo == "Zcc09/Glimpse"
+    win.check_updates.setChecked(False)
+    win.update_repo.setText("someone/else")
+    collected = win._collect()
+    assert collected.check_updates_on_start is False
+    assert collected.update_repo == "someone/else"
     win.close()
+    app.processEvents()
+
+
+def test_home_window_actions(app, glimpse_home):
+    from glimpse.ui.home_window import HomeWindow
+
+    ctrl = StubController()
+    win = HomeWindow(ctrl)
+    win.show()
+    app.processEvents()
+    assert "OCR" in win.status_label.text() or "Windows" in win.status_label.text()
+    win.set_update_status("Updates: v9.9.9 available")
+    assert "9.9.9" in win.update_label.text()
+
+    # the action buttons must reach the controller
+    win.check_btn.click()
+    assert ("check_for_updates", True) in ctrl.calls, ctrl.calls
+    win.close()
+    app.processEvents()
+
+
+def test_home_window_without_controller(app, glimpse_home):
+    """The window must build even with no controller (used in tests/tools)."""
+    from glimpse.ui.home_window import HomeWindow
+
+    win = HomeWindow(None)
+    win.set_update_status("Updates: unknown")
+    win.close()
+
+
+def test_update_dialog_renders(app, glimpse_home):
+    from glimpse import update
+    from glimpse.ui.update_dialog import UpdateDialog
+
+    info = update.UpdateInfo(
+        tag="v9.9.9",
+        version="9.9.9",
+        title="Glimpse 9.9.9",
+        notes="Fixed everything.\nAdded nothing.",
+        page_url="https://github.com/Zcc09/Glimpse/releases/tag/v9.9.9",
+        published_at="2026-09-18T00:00:00Z",
+        assets=[update.Asset("Glimpse-Setup.exe", "https://example.com/s.exe", 100)],
+    )
+    ctrl = StubController()
+    dlg = UpdateDialog(ctrl, info, "0.2.0")
+    dlg.show()
+    app.processEvents()
+    dlg.set_progress(50, 100)
+    assert dlg.progress.value() == 50
+    dlg.download_failed("boom")
+    assert "boom" in dlg.status.text()
+    dlg.close()
     app.processEvents()
 
 

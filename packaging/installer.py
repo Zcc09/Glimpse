@@ -28,7 +28,7 @@ import time
 from ctypes import wintypes
 
 APP_NAME = "Glimpse"
-APP_VERSION_FALLBACK = "0.1.0"
+APP_VERSION_FALLBACK = "0.2.0"
 PUBLISHER = "Glimpse"
 UNINSTALL_KEY = rf"Software\Microsoft\Windows\CurrentVersion\Uninstall\{APP_NAME}"
 ICON_NAME = "glimpse.ico"
@@ -218,6 +218,7 @@ def _copy_tree(src: str, dst: str, progress=None, skip=()) -> bool:
 class Options:
     def __init__(self):
         self.install_dir = default_install_dir()
+        self.install_dir_explicit = False
         self.desktop_shortcut = True
         self.startmenu_folder = APP_NAME  # None = don't create one
         self.uninstall_shortcut = True
@@ -253,6 +254,7 @@ def parse_options(argv: list[str]) -> Options:
         elif a == "--install-dir" and i + 1 < len(argv):
             i += 1
             o.install_dir = argv[i]
+            o.install_dir_explicit = True
         elif a == "--no-desktop-shortcut":
             o.desktop_shortcut = False
         elif a == "--no-startmenu-shortcut":
@@ -354,6 +356,12 @@ def _cli_main(opts: Options) -> int:
             return 0
         print(f"{APP_NAME} is not installed.")
         return 1
+    if not opts.install_dir_explicit:
+        # an update (the in-app updater runs this silently) must land in the same
+        # folder the user originally chose, never a second copy in the default one
+        _ver, prev_dir = detect_existing_install()
+        if prev_dir:
+            opts.install_dir = prev_dir
     problem = _protected_reason(opts.install_dir)
     if problem:
         print(problem, file=sys.stderr)

@@ -65,6 +65,14 @@ def tray_icon() -> QIcon:
     return ic
 
 
+def tile_icon(size: int = 20) -> QIcon:
+    """The app tile itself (used for tray 'Open')."""
+    ic = QIcon()
+    ic.addPixmap(lens_pixmap(size))
+    ic.addPixmap(lens_pixmap(size * 2))
+    return ic
+
+
 # ------------------------------------------------------------------ glyphs
 def _stroke_pen(p: QPainter, color: QColor, s: float, width: float = 0.085) -> QPen:
     pen = QPen(color)
@@ -261,6 +269,7 @@ def tray_menu_icons() -> dict:
         "songid": icon("music", 20),
         "history": icon("history", 20),
         "settings": icon("settings", 20),
+        "update": icon("save", 20),
         "about": icon("info", 20),
         "quit": icon("close", 20),
     }

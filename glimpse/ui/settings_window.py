@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QKeySequenceEdit,
     QLabel,
+    QLineEdit,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -213,6 +214,26 @@ class SettingsWindow(QDialog):
         app_form.addRow("", brows)
         root.addWidget(app_group)
 
+        # -------------------------------------------------- updates
+        upd = QGroupBox("Updates")
+        upd_form = QFormLayout(upd)
+        self.check_updates = QCheckBox("Check for updates when Glimpse starts")
+        self.check_updates.setChecked(settings.check_updates_on_start)
+        upd_form.addRow("", self.check_updates)
+        self.update_repo = QLineEdit(settings.update_repo)
+        self.update_repo.setPlaceholderText("owner/repo")
+        self.update_repo.setToolTip("The public GitHub repository whose releases Glimpse checks")
+        upd_form.addRow("GitHub repository", self.update_repo)
+        upd_row = QHBoxLayout()
+        check_now = QPushButton("Check now")
+        check_now.clicked.connect(self._check_updates_now)
+        upd_row.addWidget(check_now)
+        self.update_result = QLabel("")
+        self.update_result.setObjectName("muted")
+        upd_row.addWidget(self.update_result, 1)
+        upd_form.addRow("", upd_row)
+        root.addWidget(upd)
+
         root.addStretch(1)
 
         # -------------------------------------------------- footer
@@ -256,6 +277,26 @@ class SettingsWindow(QDialog):
         if self.controller:
             self.controller.identify_song(seconds=4)
 
+    def _check_updates_now(self) -> None:
+        from .. import update
+        from ..util import run_bg
+
+        repo = self.update_repo.text().strip() or update.DEFAULT_REPO
+        self.update_result.setText(f"checking {repo}…")
+
+        def ok(info) -> None:
+            if info is None:
+                self.update_result.setText(f"up to date (v{update.current_version()})")
+                return
+            self.update_result.setText(f"v{info.version} available")
+            if self.controller:
+                self.controller.show_update_dialog(info)
+
+        def err(kind: str, msg: str, tb: str) -> None:
+            self.update_result.setText(f"check failed: {msg}")
+
+        run_bg(lambda: update.check_for_update(repo), ok, err, name="update-check")
+
     def _restore_defaults(self) -> None:
         defaults = Settings()
         for action, edit in self.hk_edits.items():
@@ -280,6 +321,8 @@ class SettingsWindow(QDialog):
         self.audio_source.setCurrentIndex(max(0, idx))
         self.record_seconds.setValue(defaults.record_seconds)
         self.show_toasts.setChecked(defaults.show_toasts)
+        self.check_updates.setChecked(defaults.check_updates_on_start)
+        self.update_repo.setText(defaults.update_repo)
 
     # ---------------------------------------------------------------- save
     def _collect(self) -> Settings | None:
@@ -312,6 +355,8 @@ class SettingsWindow(QDialog):
         s.record_seconds = self.record_seconds.value()
         s.autostart = self.autostart_box.isChecked()
         s.show_toasts = self.show_toasts.isChecked()
+        s.check_updates_on_start = self.check_updates.isChecked()
+        s.update_repo = self.update_repo.text().strip() or "Zcc09/Glimpse"
         s.first_run_done = self.settings.first_run_done
         return s
 

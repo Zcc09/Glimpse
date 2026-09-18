@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import logging
 import sys
+import tempfile
+from pathlib import Path
 
 from PySide6.QtCore import QObject, QRect, QTimer
 from PySide6.QtGui import QAction, QImage
 from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QSystemTrayIcon, QWidget
 
-from . import __app_name__, __version__, autostart, icons, util, visual
+from . import __app_name__, __version__, autostart, icons, update, util, visual
 from .audio import fetch_cover, identify_song, record_wav
 from .capture import grab_all, png_bytes
 from .config import Settings
@@ -21,11 +23,13 @@ from .single_instance import SingleInstance
 from .translate import translate_text
 from .ui import theme as theme_mod
 from .ui.history_window import HistoryWindow
+from .ui.home_window import HomeWindow
 from .ui.listening_pill import ListeningPill
 from .ui.result_window import ResultWindow
 from .ui.settings_window import SettingsWindow
 from .ui.song_window import SongWindow
 from .ui.toast import ToastManager
+from .ui.update_dialog import UpdateDialog
 
 
 class GlimpseApp(QObject):
@@ -42,6 +46,8 @@ class GlimpseApp(QObject):
         self.windows: list = []
         self.history_window: HistoryWindow | None = None
         self.settings_window: SettingsWindow | None = None
+        self.home_window: HomeWindow | None = None
+        self.update_dialog: UpdateDialog | None = None
 
         # hidden window that receives WM_HOTKEY messages
         self._hotkey_sink = QWidget()
@@ -61,6 +67,8 @@ class GlimpseApp(QObject):
 
         if not start_hidden:
             QTimer.singleShot(700, self._welcome)
+        if settings.check_updates_on_start:
+            QTimer.singleShot(4000, lambda: self.check_for_updates(interactive=False))
 
     # ---------------------------------------------------------------- tray
     def _build_tray(self) -> None:
@@ -68,38 +76,65 @@ class GlimpseApp(QObject):
         self.tray.setToolTip(f"{__app_name__} — capture: {self.settings.hotkeys.get('capture', '')}")
         menu = QMenu()
         mi = icons.tray_menu_icons()
-        acts = [
-            ("capture", "Capture area…", lambda: self.start_capture()),
-            ("translate", "Capture & translate…", lambda: self.start_capture(immediate="translate")),
-            ("visual", "Capture & visual search…", lambda: self.start_capture(immediate="visual")),
-            ("songid", "Identify song…", lambda: self.identify_song()),
-        ]
-        for key, label, cb in acts:
-            a = QAction(mi[key], label, self)
+
+        def add(key: str, label: str, cb, icon_override=None) -> QAction:
+            a = QAction(icon_override or mi[key], label, self)
             a.triggered.connect(cb)
             menu.addAction(a)
+            return a
+
+        add("capture", "Open Glimpse", self.show_home, icon_override=icons.tile_icon(20))
         menu.addSeparator()
-        h = QAction(mi["history"], "History…", self)
-        h.triggered.connect(self.show_history)
-        menu.addAction(h)
-        s = QAction(mi["settings"], "Settings…", self)
-        s.triggered.connect(self.show_settings)
-        menu.addAction(s)
-        a = QAction(mi["about"], "About", self)
-        a.triggered.connect(self.show_about)
-        menu.addAction(a)
+        add("capture", "Capture area…", lambda: self.start_capture())
+        add("translate", "Capture & translate…", lambda: self.start_capture(immediate="translate"))
+        add("visual", "Capture & visual search…", lambda: self.start_capture(immediate="visual"))
+        add("songid", "Identify song…", lambda: self.identify_song())
         menu.addSeparator()
-        q = QAction(mi["quit"], "Quit", self)
-        q.triggered.connect(self.quit)
-        menu.addAction(q)
+        add("history", "History…", self.show_history)
+        add("settings", "Options…", self.show_settings)
+        self.autostart_action = QAction(mi["settings"], "Run at startup", self)
+        self.autostart_action.setCheckable(True)
+        self.autostart_action.toggled.connect(self.toggle_autostart)
+        menu.addAction(self.autostart_action)
+        add("update", "Check for updates…", lambda: self.check_for_updates(interactive=True))
+        add("about", "About", self.show_about)
+        menu.addSeparator()
+        add("quit", "Exit", self.quit)
 
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self._on_tray_activated)
         self.tray.show()
+        self._sync_autostart_menu()
 
     def _on_tray_activated(self, reason) -> None:
         if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
-            self.start_capture()
+            self.show_home()
+
+    def _sync_autostart_menu(self) -> None:
+        action = getattr(self, "autostart_action", None)
+        if action is None:
+            return
+        enabled = autostart.is_enabled() if autostart.supported() else bool(self.settings.autostart)
+        action.blockSignals(True)
+        action.setChecked(enabled)
+        action.blockSignals(False)
+
+    def toggle_autostart(self, enabled: bool) -> None:
+        if not autostart.supported():
+            self.notify("Run at startup", "Available in the installed build (see Options).", kind="warn", timeout=5000)
+            self._sync_autostart_menu()
+            return
+        if autostart.set_enabled(bool(enabled)):
+            self.settings.autostart = bool(enabled)
+            try:
+                self.settings.save()
+            except Exception:
+                pass
+            self.notify("Run at startup", "Glimpse will start with Windows." if enabled else "Glimpse will no longer start with Windows.",
+                        kind="success", timeout=2500)
+        else:
+            self.notify("Run at startup", "Windows refused the startup entry.", kind="warn")
+        self._sync_autostart_menu()
 
     # ---------------------------------------------------------------- hotkeys
     def _register_hotkeys(self) -> None:
@@ -364,6 +399,109 @@ class GlimpseApp(QObject):
         self.history_window.raise_()
         self.history_window.activateWindow()
 
+    def show_home(self) -> None:
+        if self.home_window is None:
+            self.home_window = HomeWindow(self)
+            self.home_window.destroyed.connect(lambda *_: setattr(self, "home_window", None))
+        self.home_window.show()
+        self.home_window.raise_()
+        self.home_window.activateWindow()
+        self.home_window.refresh_status()
+
+    # ---------------------------------------------------------------- updates
+    def _set_home_update_status(self, text: str) -> None:
+        if self.home_window is not None:
+            try:
+                self.home_window.set_update_status(text)
+            except RuntimeError:
+                pass
+
+    def check_for_updates(self, interactive: bool = True) -> None:
+        repo = (self.settings.update_repo or update.DEFAULT_REPO).strip()
+        cur = update.current_version()
+        if interactive:
+            self.notify("Checking for updates…", f"GitHub: {repo}", timeout=2000)
+
+        def ok(info) -> None:
+            if info is None:
+                msg = f"v{cur} is the latest version."
+                self._set_home_update_status(f"Updates: {msg}")
+                if interactive:
+                    self.notify("You're up to date", f"{__app_name__} {msg}", kind="success", timeout=4000)
+                return
+            self._set_home_update_status(f"Updates: v{info.version} available (you have v{cur})")
+            if interactive:
+                self._show_update_dialog(info, cur)
+            else:
+                self.notify(
+                    f"Update available: v{info.version}",
+                    f"You have v{cur} — click for details.",
+                    kind="info",
+                    timeout=9000,
+                    action_label="Details",
+                    action_cb=lambda: self._show_update_dialog(info, cur),
+                )
+
+        def err(kind: str, msg: str, tb: str) -> None:
+            self._set_home_update_status(f"Updates: check failed ({msg})")
+            if interactive:
+                self.notify("Update check failed", msg, kind="warn", timeout=6000)
+
+        util.run_bg(lambda: update.check_for_update(repo, current=cur), ok, err, name="update-check")
+
+    def show_update_dialog(self, info: update.UpdateInfo) -> None:
+        """Public entry for other windows (e.g. Options → Check now)."""
+        self._show_update_dialog(info, update.current_version())
+
+    def _show_update_dialog(self, info: update.UpdateInfo, cur: str) -> None:
+        if self.update_dialog is not None:
+            try:
+                self.update_dialog.close()
+            except RuntimeError:
+                pass
+        self.update_dialog = UpdateDialog(self, info, cur)
+        self.update_dialog.finished.connect(lambda *_: setattr(self, "update_dialog", None))
+        self.update_dialog.show()
+
+    def download_update(self, info: update.UpdateInfo, dialog) -> None:
+        asset = info.installer_asset()
+        if asset is None:
+            dialog.download_failed("no installer asset in this release")
+            return
+        if update.is_installed():
+            dest = Path(tempfile.gettempdir()) / f"Glimpse-{info.version}-Setup.exe"
+        else:
+            dest = update.download_dir() / (asset.name or f"Glimpse-{info.version}-Setup.exe")
+
+        def job():
+            return update.download(asset.url, dest, progress=lambda done, total: dialog.progress_sig.emit(done, total))
+
+        util.run_bg(
+            job,
+            on_ok=lambda path: dialog.download_finished(str(path)),
+            on_err=lambda k, m, tb: dialog.download_failed(m),
+            name="update-download",
+        )
+
+    def finish_update(self, path: str, dialog) -> None:
+        if update.is_installed():
+            if update.launch_installer(Path(path), silent=True, launch_after=True):
+                dialog.accept()
+                self.notify("Installing update", "Glimpse will close, update in place and restart.", timeout=3000)
+                QTimer.singleShot(1500, self.quit)
+            else:
+                dialog.download_failed("could not start the installer")
+        else:
+            folder = str(Path(path).parent)
+            util.open_path(folder)
+            dialog.accept()
+            self.notify(
+                "Update downloaded",
+                f"{Path(path).name} is in {folder} — this is the portable copy, so run the installer when you're ready.",
+                kind="success", timeout=9000,
+                action_label="Open folder", action_cb=lambda: util.open_path(folder),
+            )
+
     def show_settings(self) -> None:
         if self.settings_window is None:
             self.settings_window = SettingsWindow(self, self.settings)
@@ -443,6 +581,9 @@ class GlimpseApp(QObject):
                 self.notify("Autostart", "Could not update the Windows startup entry.", kind="warn")
         self.history.limit = new.history_limit
         self.tray.setToolTip(f"{__app_name__} — capture: {new.hotkeys.get('capture', '')}")
+        self._sync_autostart_menu()
+        if self.home_window is not None:
+            self.home_window.refresh_status()
         self.notify("Settings saved", "", kind="success", timeout=2000)
 
     # ---------------------------------------------------------------- lifecycle
