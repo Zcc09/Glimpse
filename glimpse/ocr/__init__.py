@@ -33,6 +33,7 @@ class OcrResult:
     language: str = ""
     engine: str = "windows"
     low_confidence: bool = False
+    confidence: float = 0.0  # engine-reported confidence (0 when the engine has none)
 
 
 class OcrError(RuntimeError):
@@ -77,6 +78,42 @@ def is_plausible(text: str) -> bool:
     chars = [c for c in t if not c.isspace()]
     letters = sum(1 for c in chars if c.isalpha() or c.isdigit())
     return len(chars) <= 12 and letters / max(1, len(chars)) >= 0.9
+
+
+_SYMBOLS = set(".,;:!?()[]{}'\"-–—/\\@#$%&*+=<>|~^_`°·’”“…«»،؛؟")
+
+
+def _is_junk_word(w: str) -> bool:
+    """A single token that looks like a misread: symbol soup, digits inside letters, cAse."""
+    alnum = [c for c in w if c.isalnum()]
+    if not alnum:
+        return True
+    symbols = sum(1 for c in w if not (c.isalnum() or c in _SYMBOLS))
+    if symbols >= 2:
+        return True
+    letters = [c for c in w if c.isalpha()]
+    has_digit = any(c.isdigit() for c in w)
+    if letters and has_digit and len(w) > 2:
+        return True
+    if len(letters) >= 3:
+        lower_upper = sum(1 for a, b in zip(letters, letters[1:]) if a.islower() and b.isupper())
+        upper_lower = sum(1 for a, b in zip(letters, letters[1:]) if a.isupper() and b.islower())
+        if lower_upper >= 2 or (lower_upper >= 1 and upper_lower >= 1 and len(letters) >= 5):
+            return True
+    return False
+
+
+def junk_ratio(text: str) -> float:
+    """Fraction of tokens that look like OCR garbage (1.0 for empty text).
+
+    Windows OCR happily renders Cyrillic or CJK as confident-looking Latin noise
+    ('noroaa ceroAHfl OTJIL,-11--lHafi.'), so "it read several words" is not enough
+    to trust a result — this is the check the engine chain uses before stopping.
+    """
+    words = [w for w in re.split(r"\s+", (text or "").strip()) if w]
+    if not words:
+        return 1.0
+    return sum(1 for w in words if _is_junk_word(w)) / len(words)
 
 
 # ------------------------------------------------------------------ preparation
@@ -177,16 +214,22 @@ def _windows_best(image: QImage, language: str = "") -> OcrResult:
     return best
 
 
-def _tesseract(image: QImage, languages) -> OcrResult:
+def _tesseract(image: QImage, languages, all_installed: bool = True) -> OcrResult:
     from .tesseract_ocr import TesseractOcr
 
-    return TesseractOcr().recognize(image, languages)
+    return TesseractOcr().recognize(image, languages, all_installed=all_installed)
 
 
-def recognize(image: QImage, language: str = "", engine: str = "auto", tess_languages=None) -> OcrResult:
+def recognize(
+    image: QImage,
+    language: str = "",
+    engine: str = "auto",
+    tess_languages=None,
+    all_languages: bool = True,
+) -> OcrResult:
     """OCR one image with the configured engine chain."""
     return _flag(  # results that read as gibberish get flagged for the UI to explain
-        _recognize(image, language, engine, tess_languages)
+        _recognize(image, language, engine, tess_languages, all_languages)
     )
 
 
@@ -197,14 +240,27 @@ def _flag(res: OcrResult) -> OcrResult:
     return res
 
 
-def _recognize(image: QImage, language: str = "", engine: str = "auto", tess_languages=None) -> OcrResult:
+def _quality(res: OcrResult | None) -> tuple:
+    """Ranking for the engine comparison: confidence first, then how text-like it reads."""
+    if res is None:
+        return (-1.0, -1.0)
+    return (res.confidence, score_text(res.text))
+
+
+def _recognize(
+    image: QImage,
+    language: str = "",
+    engine: str = "auto",
+    tess_languages=None,
+    all_languages: bool = True,
+) -> OcrResult:
     engine = (engine or "auto").lower()
     tess_langs = [str(c) for c in (tess_languages or []) if c] or ["eng"]
 
     if engine == "windows":
         return _windows_best(image, language)
     if engine == "tesseract":
-        return _tesseract(image, tess_langs)
+        return _tesseract(image, tess_langs, all_languages)
 
     # auto: Windows (any installed language) first, Tesseract as the safety net
     win: OcrResult | None = None
@@ -213,11 +269,13 @@ def _recognize(image: QImage, language: str = "", engine: str = "auto", tess_lan
     except Exception as e:  # noqa: BLE001
         log.info("auto OCR: Windows engine unavailable (%s)", e)
     win_score = score_text(win.text) if win else -1.0
-    if win is not None and win_score >= 60.0:
-        return win  # long, clean read — no need to spend a second engine
+    # "it read several words" is not proof: Windows renders foreign scripts as
+    # confident Latin noise, so only stop early when the read also looks clean
+    if win is not None and win_score >= 60.0 and junk_ratio(win.text) < 0.25:
+        return win
 
     try:
-        tess = _tesseract(image, tess_langs)
+        tess = _tesseract(image, tess_langs, all_languages)
     except Exception as e:  # noqa: BLE001
         if win is not None:
             if not is_plausible(win.text):
@@ -229,9 +287,32 @@ def _recognize(image: QImage, language: str = "", engine: str = "auto", tess_lan
         return tess
     if not tess.text.strip():
         return win  # tesseract found nothing; Windows is all we have
-    if is_plausible(tess.text) != is_plausible(win.text):
-        return tess if is_plausible(tess.text) else win  # prefer the believable one
-    return tess if score_text(tess.text) > win_score else win
+
+    # Both engines answered. Windows reports no confidence, so rank by how clean each
+    # read is first (a wrong-script read is confident-looking Latin noise), then by
+    # believability, and only give the win to tesseract when it read clearly more.
+    #
+    # Strongest signal first: if tesseract read a script Windows has no language pack for
+    # (Greek text on an English-only machine), Windows cannot have read that text at all —
+    # its answer is a transliteration of the glyphs, not the text.
+    from .languages import dominant_script, windows_scripts
+
+    tess_script = dominant_script(tess.text)
+    if tess_script and is_plausible(tess.text):
+        if tess_script not in windows_scripts(available_languages()):
+            return tess
+
+    win_junk, tess_junk = junk_ratio(win.text), junk_ratio(tess.text)
+    if tess_junk + 0.25 < win_junk:
+        return tess
+    if win_junk + 0.25 < tess_junk:
+        return win
+    win_ok, tess_ok = is_plausible(win.text), is_plausible(tess.text)
+    if tess_ok != win_ok:
+        return tess if tess_ok else win
+    if score_text(tess.text) > score_text(win.text) * 1.25:
+        return tess
+    return win
 
 
 # ------------------------------------------------------------------ capabilities

@@ -214,6 +214,15 @@ def glyph_pixmap(kind: str, size: int = 22, color: str = "#ffffff") -> QPixmap:
         p.drawLine(QPointF(s * 0.18, s * 0.84), QPointF(s * 0.82, s * 0.84))
         p.drawLine(QPointF(s * 0.82, s * 0.84), QPointF(s * 0.82, s * 0.72))
 
+    elif kind == "record":
+        # a filled dot inside a ring — the universal "recording" mark
+        _stroke_pen(p, c, s, 0.075)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QPointF(s * 0.5, s * 0.5), s * 0.32, s * 0.32)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(c))
+        p.drawEllipse(QPointF(s * 0.5, s * 0.5), s * 0.17, s * 0.17)
+
     elif kind == "trash":
         _stroke_pen(p, c, s, 0.074)
         p.drawLine(QPointF(s * 0.18, s * 0.28), QPointF(s * 0.82, s * 0.28))
@@ -252,6 +261,8 @@ ACTION_ICON_KINDS = {
     "visual": "search",
     "qr": "qr",
     "copy": "copy",
+    "save": "save",
+    "record": "record",
     "cancel": "close",
 }
 
@@ -270,6 +281,9 @@ def tray_menu_icons() -> dict:
         "history": icon("history", 20),
         "settings": icon("settings", 20),
         "update": icon("save", 20),
+        "save": icon("save", 20),
+        "record": icon("record", 20),
+        "folder": icon("history", 20),
         "about": icon("info", 20),
         "quit": icon("close", 20),
     }

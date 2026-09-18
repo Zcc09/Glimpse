@@ -110,6 +110,27 @@ def grab_region(rect: QRect) -> QImage:
     return grab_all().crop(rect)
 
 
+def grab_region_device(rect: QRect) -> QImage:
+    """Grab a region **live** at native device resolution (used by the recorder).
+
+    Only the screens the region touches are read, and the crop reuses the same
+    DPR-aware math as a snip, so recorded frames match a screenshot of the same area.
+    """
+    rect = rect.normalized()
+    pieces: list[Piece] = []
+    for screen in QGuiApplication.screens():
+        geo = screen.geometry()
+        if not geo.intersects(rect):
+            continue
+        pm = screen.grabWindow(0)
+        if pm.isNull():
+            continue
+        pieces.append(Piece(rect=geo, dpr=float(screen.devicePixelRatio() or 1.0), pixmap=pm))
+    if not pieces:
+        raise RuntimeError("could not capture the recording region")
+    return ScreenShot(virtual_rect=rect, pieces=pieces).crop(rect)
+
+
 def png_bytes(image: QImage) -> bytes:
     # keep the QByteArray alive — a temporary here lets Qt write into freed memory
     ba = QByteArray()

@@ -10,7 +10,7 @@ from PySide6.QtCore import QObject, QRect, QTimer
 from PySide6.QtGui import QAction, QImage
 from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QSystemTrayIcon, QWidget
 
-from . import __app_name__, __version__, autostart, icons, update, util, visual
+from . import __app_name__, __version__, autostart, icons, record, update, util, visual
 from .audio import fetch_cover, identify_song, record_wav
 from .capture import grab_all, png_bytes
 from .config import Settings
@@ -22,9 +22,11 @@ from .paths import app_dir
 from .single_instance import SingleInstance
 from .translate import translate_text
 from .ui import theme as theme_mod
+from .ui.clip_window import ClipWindow
 from .ui.history_window import HistoryWindow
 from .ui.home_window import HomeWindow
 from .ui.listening_pill import ListeningPill
+from .ui.record_hud import RecordingIndicator
 from .ui.result_window import ResultWindow
 from .ui.settings_window import SettingsWindow
 from .ui.song_window import SongWindow
@@ -43,6 +45,9 @@ class GlimpseApp(QObject):
         self.overlay = None
         self._pill: ListeningPill | None = None
         self._song_windows: list[SongWindow] = []
+        self._recorder: record.Recorder | None = None
+        self._hud: RecordingIndicator | None = None
+        self._clip_windows: list[ClipWindow] = []
         self.windows: list = []
         self.history_window: HistoryWindow | None = None
         self.settings_window: SettingsWindow | None = None
@@ -89,6 +94,10 @@ class GlimpseApp(QObject):
         add("translate", "Capture & translate…", lambda: self.start_capture(immediate="translate"))
         add("visual", "Capture & visual search…", lambda: self.start_capture(immediate="visual"))
         add("songid", "Identify song…", lambda: self.identify_song())
+        menu.addSeparator()
+        add("save", "Save screenshot…", lambda: self.start_capture(immediate="save"))
+        self.record_action = add("record", "Record region…", lambda: self.start_capture(immediate="record"))
+        add("folder", "Clips folder…", self.open_clips_folder)
         menu.addSeparator()
         add("history", "History…", self.show_history)
         add("settings", "Options…", self.show_settings)
@@ -164,6 +173,13 @@ class GlimpseApp(QObject):
         if action == "visual":
             self.start_capture(immediate="visual")
             return
+        if action == "record":
+            # the same hotkey stops a recording in progress
+            if self.recording:
+                self.stop_recording()
+            else:
+                self.start_capture(immediate="record")
+            return
         self.start_capture()
 
     def _on_instance_message(self, message: str) -> None:
@@ -226,6 +242,10 @@ class GlimpseApp(QObject):
             self._action_visual(image)
         elif action == "qr":
             self._action_qr(image)
+        elif action == "save":
+            self.save_screenshot(image)
+        elif action == "record":
+            self.start_recording(sel)
         elif action == "copy":
             self.notify("Image copied", "The selected area is on your clipboard.", kind="success", timeout=2200)
         else:
@@ -235,7 +255,7 @@ class GlimpseApp(QObject):
     def _run_ocr(self, image: QImage, win: ResultWindow, on_text=None) -> None:
         s = self.settings
         util.run_bg(
-            lambda: recognize(image, s.ocr_language, s.ocr_engine, s.tess_languages),
+            lambda: recognize(image, s.ocr_language, s.ocr_engine, s.tess_languages, s.ocr_use_all_languages),
             on_ok=lambda res: self._ocr_done(win, res, on_text),
             on_err=lambda k, m, tb: win.set_error(f"{k}: {m}"),
             name="ocr",
@@ -561,6 +581,157 @@ class GlimpseApp(QObject):
         if path:
             image.save(path, "PNG")
             self.notify("Saved", path, kind="success")
+
+    # ---------------------------------------------------------------- screenshots & clips
+    def screenshots_dir(self) -> Path:
+        from .paths import known_folder
+
+        configured = (self.settings.screenshot_dir or "").strip()
+        base = Path(configured) if configured else known_folder("Pictures") / "Glimpse"
+        base.mkdir(parents=True, exist_ok=True)
+        return base
+
+    def clips_dir(self) -> Path:
+        from .paths import known_folder
+
+        configured = (self.settings.record_dir or "").strip()
+        base = Path(configured) if configured else known_folder("Videos") / "Glimpse"
+        base.mkdir(parents=True, exist_ok=True)
+        return base
+
+    def _next_capture_path(self, folder: Path, prefix: str) -> Path:
+        import time
+
+        stamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+        path = folder / f"{prefix}_{stamp}.png"
+        n = 2
+        while path.exists():
+            path = folder / f"{prefix}_{stamp}-{n}.png"
+            n += 1
+        return path
+
+    def save_screenshot(self, image: QImage) -> None:
+        """Save a snipped area as a PNG in the screenshots folder."""
+        try:
+            path = self._next_capture_path(self.screenshots_dir(), "Screenshot")
+            if not image.save(str(path), "PNG"):
+                raise RuntimeError("Qt could not write the PNG")
+        except Exception as e:  # noqa: BLE001
+            log.warning("screenshot save failed: %s", e)
+            self.notify("Could not save the screenshot", str(e), kind="error")
+            return
+        log.info("screenshot saved: %s", path)
+        self.notify(
+            "Screenshot saved",
+            f"{path.name}  →  {path.parent}",
+            kind="success",
+            timeout=5000,
+            action_label="Open folder",
+            action_cb=lambda: util.open_path(str(path.parent)),
+        )
+        self._record("image", title=path.name, text=str(path), image=image, extra={"path": str(path)})
+
+    @property
+    def recording(self) -> bool:
+        return self._recorder is not None and self._recorder.is_running()
+
+    def start_recording(self, region: QRect) -> None:
+        """Record a screen region to MP4 until stopped."""
+        if self.recording:
+            self.stop_recording()
+            return
+        if not record.ffmpeg_available():
+            self.notify(
+                "Recording needs ffmpeg",
+                "Install it with 'winget install Gyan.FFmpeg', or drop ffmpeg.exe next to Glimpse.",
+                kind="warn",
+                timeout=9000,
+            )
+            return
+        s = self.settings
+        try:
+            path = self._next_capture_path(self.clips_dir(), "Recording").with_suffix(".mp4")
+        except Exception as e:  # noqa: BLE001
+            self.notify("Could not open the clips folder", str(e), kind="error")
+            return
+        rec = record.Recorder(
+            region,
+            path,
+            fps=s.record_fps,
+            max_seconds=s.record_max_seconds,
+            audio=s.record_audio,
+            audio_source=s.audio_source,
+            audio_device=s.mic_device_name,
+        )
+        rec.finished.connect(self._recording_finished)
+        rec.failed.connect(self._recording_failed)
+        self._recorder = rec
+
+        self._hud = RecordingIndicator(region)
+        self._hud.stop_requested.connect(self.stop_recording)
+        self._hud.show()
+        rec.start()
+        if self.record_action is not None:
+            self.record_action.setText("Stop recording")
+        self.notify(
+            "Recording",
+            f"{region.width()}×{region.height()} · press {s.hotkeys.get('record', 'Ctrl+Alt+R')} or Stop to finish",
+            kind="success",
+            timeout=4500,
+        )
+
+    def stop_recording(self) -> None:
+        if self._recorder is None:
+            return
+        if self._recorder.is_running():
+            self._recorder.stop()
+            self.notify("Finishing the recording…", "", timeout=2500)
+
+    def _close_hud(self) -> None:
+        if self._hud is not None:
+            try:
+                self._hud.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._hud = None
+        if self.record_action is not None:
+            self.record_action.setText("Record region…")
+
+    def _recording_finished(self, path: str) -> None:
+        self._close_hud()
+        self._recorder = None
+        seconds = record.probe_duration(path)
+        log.info("clip ready: %s (%.1fs)", path, seconds)
+        self.notify(
+            "Recording saved",
+            f"{Path(path).name} · {seconds:.1f}s",
+            kind="success",
+            timeout=5000,
+            action_label="Open folder",
+            action_cb=lambda: util.open_path(str(Path(path).parent)),
+        )
+        self._record("clip", title=Path(path).name, text=path, extra={"path": path, "seconds": round(seconds, 2)})
+        self.open_clip(path)
+
+    def _recording_failed(self, message: str) -> None:
+        self._close_hud()
+        self._recorder = None
+        self.notify("Recording failed", message, kind="error", timeout=7000)
+
+    def open_clip(self, path: str) -> None:
+        """Show the trim/share window for a clip."""
+        win = ClipWindow(self, path)
+        self._clip_windows.append(win)
+        win.destroyed.connect(lambda *_: self._clip_windows.remove(win) if win in self._clip_windows else None)
+        win.show()
+        win.raise_()
+
+    def open_clips_folder(self) -> None:
+        try:
+            util.open_path(str(self.clips_dir()))
+        except Exception as e:  # noqa: BLE001
+            self.notify("Could not open the clips folder", str(e), kind="error")
+
 
     def fetch_cover_into(self, win, url: str) -> None:
         util.run_bg(lambda: fetch_cover(url), on_ok=lambda data: self._apply_cover(win, data), name="cover")

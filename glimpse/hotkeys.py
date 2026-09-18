@@ -19,7 +19,7 @@ MOD_NOREPEAT = 0x4000
 WM_HOTKEY = 0x0312
 
 # stable ids so tests (and logs) can post WM_HOTKEY deterministically
-FIXED_IDS = {"capture": 1, "translate": 2, "visual": 3, "songid": 4}
+FIXED_IDS = {"capture": 1, "translate": 2, "visual": 3, "songid": 4, "record": 5}
 
 
 class MSG(ctypes.Structure):

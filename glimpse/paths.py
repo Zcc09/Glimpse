@@ -32,6 +32,13 @@ def captures_dir() -> Path:
     return d
 
 
+def known_folder(name: str) -> Path:
+    """A user folder such as Pictures/Videos, with the home dir as fallback."""
+    home = Path.home()
+    cand = home / name
+    return cand if cand.is_dir() else home
+
+
 def settings_path() -> Path:
     return app_dir() / "settings.json"
 

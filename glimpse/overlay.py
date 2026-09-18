@@ -1,15 +1,21 @@
-"""Snipping-Tool style overlay: freeze the desktop, drag a region, pick an action."""
+"""Snipping-Tool style overlay: freeze the desktop, drag a region, pick an action.
+
+One window **per screen**: a single window spanning a mixed-DPI virtual desktop gets
+scaled by Windows to the DPI of whichever monitor it was created on, which made the
+other monitors look zoomed. Per-screen windows keep every screen's pixels 1:1, and the
+drag is tracked in global logical coordinates so a selection can still span monitors.
+"""
 from __future__ import annotations
 
 import ctypes
 import time
 
-from PySide6.QtCore import QPoint, QRect, Qt, Signal
+from PySide6.QtCore import QObject, QPoint, QRect, Qt, Signal
 from PySide6.QtGui import QColor, QCursor, QFont, QGuiApplication, QPainter, QPen
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
 
 from . import icons
-from .capture import ScreenShot
+from .capture import Piece, ScreenShot
 from .log import log
 from .ui import theme as T
 
@@ -62,7 +68,7 @@ def _force_foreground(widget: QWidget) -> None:
 
 
 class ActionBar(QWidget):
-    """The floating 'Text / Translate / Search / Code / Copy' bar under the selection."""
+    """The floating 'Text / Translate / Search / Code / Save / Record / Copy' bar."""
 
     chosen = Signal(str)
 
@@ -71,6 +77,8 @@ class ActionBar(QWidget):
         ("translate", "Translate"),
         ("visual", "Search"),
         ("qr", "Code"),
+        ("save", "Save"),
+        ("record", "Record"),
         ("copy", "Copy"),
     ]
 
@@ -114,6 +122,7 @@ class ActionBar(QWidget):
             btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             if key == default_action:
                 btn.setObjectName("default_action")
+            btn.setToolTip(self._tooltip(key))
             btn.clicked.connect(lambda _=False, k=key: self.chosen.emit(k))
             lay.addWidget(btn)
 
@@ -135,6 +144,15 @@ class ActionBar(QWidget):
 
         self.setFixedHeight(BTN_H + BAR_PAD * 2 + 2)
 
+    @staticmethod
+    def _tooltip(key: str) -> str:
+        return {
+            "save": "Save the selection as a screenshot",
+            "record": "Record the selection to a video",
+            "copy": "Copy the image to the clipboard (Enter/Ctrl+C)",
+            "qr": "Scan a QR code or barcode",
+        }.get(key, key.capitalize())
+
     def width_hint(self) -> int:
         return BAR_PAD * 2 + BTN_W * len(self.ACTIONS) + BAR_GAP * (len(self.ACTIONS) + 2) + SEP_W + SEP_MARGIN * 2 + CLOSE_W
 
@@ -147,184 +165,240 @@ class ActionBar(QWidget):
         return BAR_PAD + idx * (BTN_W + BAR_GAP) + BTN_W // 2
 
 
-class Overlay(QWidget):
-    """Full virtual-desktop freeze-frame selector."""
+class OverlayWindow(QWidget):
+    """One freeze-frame window, covering exactly one screen."""
 
-    action_chosen = Signal(str, QRect)   # action key, selection (global logical coords)
-    cancelled = Signal()
-
-    def __init__(self, shot: ScreenShot, default_action: str = "text", immediate_action: str | None = None, parent=None):
+    def __init__(self, overlay: "Overlay", piece: Piece):
         super().__init__(
-            parent,
+            None,
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.Tool,
         )
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.overlay = overlay
+        self.piece = piece
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.CrossCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.shot = shot
-        self.default_action = default_action or "text"
-        self.immediate_action = immediate_action
-        self.virtual_rect = shot.virtual_rect
-        self.setGeometry(shot.virtual_rect)
-
-        self._start: QPoint | None = None
-        self._end: QPoint | None = None
-        self._dragging = False
-        self._bar: ActionBar | None = None
-        self._done = False
-
-        self._hint = self._make_hint_text()
-
-    # ------------------------------------------------------------ helpers
-    def _make_hint_text(self) -> str:
-        labels = dict(ActionBar.ACTIONS)
-        d = labels.get(self.default_action, "Text")
-        return f"Drag to select      •      Enter = {d}      •      Esc = cancel"
-
-    def _sel_global(self) -> QRect | None:
-        if not self._start or not self._end:
-            return None
-        g0 = self.mapToGlobal(self._start)
-        g1 = self.mapToGlobal(self._end)
-        r = QRect(g0, g1).normalized()
-        if r.width() < 4 or r.height() < 4:
-            return None
-        return r
-
-    def _sel_local(self) -> QRect | None:
-        r = self._sel_global()
-        return r.translated(-self.virtual_rect.topLeft()) if r else None
+        self.setGeometry(piece.rect)  # own screen only: Windows never stretches us
+        self.setWindowTitle("Glimpse — select")
 
     # ------------------------------------------------------------ paint
     def paintEvent(self, event):  # noqa: N802
+        ov = self.overlay
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
-        for piece in self.shot.pieces:
-            r = self.shot.local_rect(piece)
-            p.drawImage(r, piece.pixmap.toImage())
-
+        # this screen's frozen content, pixel for pixel
+        img = self.piece.pixmap.toImage()
+        p.drawImage(QRect(0, 0, self.width(), self.height()), img)
         p.fillRect(self.rect(), QColor(4, 8, 11, 155))
 
-        sel = self._sel_local()
+        sel = ov.selection_global()
+        local_sel = None
         if sel:
-            # brighten the selected area again
+            inter = sel.intersected(self.piece.rect)
+            if not inter.isEmpty():
+                local_sel = inter.translated(-self.piece.rect.topLeft())
+
+        if local_sel is not None:
             p.save()
-            p.setClipRect(sel)
-            for piece in self.shot.pieces:
-                r = self.shot.local_rect(piece)
-                p.drawImage(r, piece.pixmap.toImage())
+            p.setClipRect(local_sel)
+            p.drawImage(QRect(0, 0, self.width(), self.height()), img)
             p.restore()
 
             pen = QPen(QColor(T.BLUE))
             pen.setWidth(2)
             p.setPen(pen)
             p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRect(sel.adjusted(0, 0, -1, -1))
+            p.drawRect(local_sel.adjusted(0, 0, -1, -1))
 
-            # corner handles
+            # corner handles, only for corners that are really inside this screen
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor("#ffffff"))
             h = 7
             for cx, cy in (
-                (sel.left(), sel.top()),
-                (sel.right(), sel.top()),
-                (sel.left(), sel.bottom()),
-                (sel.right(), sel.bottom()),
+                (local_sel.left(), local_sel.top()),
+                (local_sel.right(), local_sel.top()),
+                (local_sel.left(), local_sel.bottom()),
+                (local_sel.right(), local_sel.bottom()),
             ):
-                p.drawRect(QRect(cx - h // 2, cy - h // 2, h, h))
+                if 0 <= cx <= self.width() and 0 <= cy <= self.height():
+                    p.drawRect(QRect(cx - h // 2, cy - h // 2, h, h))
 
-            # size chip above the selection
-            text = f"{sel.width()} × {sel.height()}"
-            f = QFont("Segoe UI", 9)
-            f.setBold(True)
-            p.setFont(f)
-            tw = p.fontMetrics().horizontalAdvance(text) + 16
-            chip = QRect(sel.left(), max(0, sel.top() - 30), tw, 22)
-            p.setBrush(QColor(8, 12, 15, 220))
-            p.setPen(Qt.PenStyle.NoPen)
-            p.drawRoundedRect(chip, 7, 7)
-            p.setPen(QColor("#e8eef2"))
-            p.drawText(chip, Qt.AlignmentFlag.AlignCenter, text)
-        else:
-            # crosshair at the cursor
-            pos = self.mapFromGlobal(QCursor.pos())
-            pen = QPen(QColor(255, 255, 255, 70))
-            pen.setWidth(1)
-            p.setPen(pen)
-            p.drawLine(0, pos.y(), self.width(), pos.y())
-            p.drawLine(pos.x(), 0, pos.x(), self.height())
-
-            # hint chip top-centre
-            if not self._dragging:
-                f = QFont("Segoe UI", 10)
+            # size chip: drawn once, on the screen holding the selection's top-left corner
+            if self.piece.rect.contains(sel.topLeft()) or local_sel.topLeft() == QPoint(0, 0):
+                text = f"{sel.width()} × {sel.height()}"
+                f = QFont("Segoe UI", 9)
+                f.setBold(True)
                 p.setFont(f)
-                text = self._hint
-                tw = p.fontMetrics().horizontalAdvance(text) + 28
-                chip = QRect((self.width() - tw) // 2, 34, tw, 34)
+                tw = p.fontMetrics().horizontalAdvance(text) + 16
+                chip = QRect(local_sel.left(), max(0, local_sel.top() - 30), tw, 22)
+                p.setBrush(QColor(8, 12, 15, 220))
                 p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(QColor(8, 12, 15, 215))
-                p.drawRoundedRect(chip, 10, 10)
-                p.setPen(QColor("#cfe0ea"))
+                p.drawRoundedRect(chip, 7, 7)
+                p.setPen(QColor("#e8eef2"))
                 p.drawText(chip, Qt.AlignmentFlag.AlignCenter, text)
+        else:
+            # crosshair + hint only on the screen the cursor is on
+            cursor_local = self.mapFromGlobal(QCursor.pos())
+            if self.rect().contains(cursor_local):
+                pen = QPen(QColor(255, 255, 255, 70))
+                pen.setWidth(1)
+                p.setPen(pen)
+                p.drawLine(0, cursor_local.y(), self.width(), cursor_local.y())
+                p.drawLine(cursor_local.x(), 0, cursor_local.x(), self.height())
+
+                if not ov.dragging():
+                    f = QFont("Segoe UI", 10)
+                    p.setFont(f)
+                    text = ov.hint_text()
+                    tw = p.fontMetrics().horizontalAdvance(text) + 28
+                    chip = QRect((self.width() - tw) // 2, 34, tw, 34)
+                    p.setPen(Qt.PenStyle.NoPen)
+                    p.setBrush(QColor(8, 12, 15, 215))
+                    p.drawRoundedRect(chip, 10, 10)
+                    p.setPen(QColor("#cfe0ea"))
+                    p.drawText(chip, Qt.AlignmentFlag.AlignCenter, text)
         p.end()
 
-    # ------------------------------------------------------------ mouse
+    # ------------------------------------------------------------ input → controller
     def mousePressEvent(self, e):  # noqa: N802
+        self.overlay.window_pressed(self, e)
+
+    def mouseMoveEvent(self, e):  # noqa: N802
+        self.overlay.window_moved(self, e)
+
+    def mouseReleaseEvent(self, e):  # noqa: N802
+        self.overlay.window_released(self, e)
+
+    def mouseDoubleClickEvent(self, e):  # noqa: N802
+        self.overlay.window_double_clicked(self, e)
+
+    def keyPressEvent(self, e):  # noqa: N802
+        self.overlay.key_pressed(e)
+
+    def showEvent(self, e):  # noqa: N802
+        super().showEvent(e)
+        self.raise_()
+
+
+class Overlay(QObject):
+    """Controller for the per-screen freeze-frame windows; owns the selection."""
+
+    action_chosen = Signal(str, QRect)   # action key, selection (global logical coords)
+    cancelled = Signal()
+
+    def __init__(self, shot: ScreenShot, default_action: str = "text", immediate_action: str | None = None, parent=None):
+        super().__init__(parent)
+        self.shot = shot
+        self.default_action = default_action or "text"
+        self.immediate_action = immediate_action
+        self.virtual_rect = shot.virtual_rect
+
+        self._start: QPoint | None = None   # global logical coordinates
+        self._end: QPoint | None = None
+        self._dragging = False
+        self._bar: ActionBar | None = None
+        self._done = False
+
+        self.windows: list[OverlayWindow] = [OverlayWindow(self, piece) for piece in shot.pieces]
+        self.window = self.windows[0] if self.windows else None  # convenience/testing handle
+
+    # ------------------------------------------------------------ helpers
+    def hint_text(self) -> str:
+        labels = dict(ActionBar.ACTIONS)
+        d = labels.get(self.default_action, "Text")
+        return f"Drag to select      •      Enter = {d}      •      Esc = cancel"
+
+    def dragging(self) -> bool:
+        return self._dragging
+
+    def selection_global(self) -> QRect | None:
+        if not self._start or not self._end:
+            return None
+        r = QRect(self._start, self._end).normalized()
+        if r.width() < 4 or r.height() < 4:
+            return None
+        return r
+
+    # kept for the smoke test / older callers
+    def _sel_global(self) -> QRect | None:
+        return self.selection_global()
+
+    def focus_window_under_cursor(self) -> None:
+        pos = QCursor.pos()
+        target = next((w for w in self.windows if w.geometry().contains(pos)), self.window)
+        if target is None:
+            return
+        for w in self.windows:
+            w.raise_()
+        target.activateWindow()
+        target.setFocus(Qt.FocusReason.OtherFocusReason)
+        _force_foreground(target)
+
+    def repaint_all(self) -> None:
+        for w in self.windows:
+            w.update()
+
+    def render(self, target) -> None:
+        """Render the primary window into a paint device (used by tests)."""
+        if self.window is not None:
+            self.window.render(target)
+
+    # ------------------------------------------------------------ window events
+    def window_pressed(self, win: OverlayWindow, e) -> None:
         if e.button() == Qt.MouseButton.RightButton:
             self._cancel()
             return
         if e.button() != Qt.MouseButton.LeftButton:
             return
         self._hide_bar()
-        self._start = e.position().toPoint()
-        self._end = self._start
+        g = win.mapToGlobal(e.position().toPoint())
+        self._start = self._end = g
         self._dragging = True
-        self.update()
+        win.setFocus(Qt.FocusReason.MouseFocusReason)
+        self.repaint_all()
 
-    def mouseMoveEvent(self, e):  # noqa: N802
+    def window_moved(self, win: OverlayWindow, e) -> None:
         if self._dragging:
-            self._end = e.position().toPoint()
-        self.update()
+            self._end = win.mapToGlobal(e.position().toPoint())
+        self.repaint_all()
 
-    def mouseReleaseEvent(self, e):  # noqa: N802
+    def window_released(self, win: OverlayWindow, e) -> None:
         if e.button() != Qt.MouseButton.LeftButton or not self._dragging:
             return
         self._dragging = False
-        self._end = e.position().toPoint()
-        sel = self._sel_global()
+        self._end = win.mapToGlobal(e.position().toPoint())
+        sel = self.selection_global()
         if not sel:
             log.info("drag too small — selection cleared")
             self._start = self._end = None
-            self.update()
+            self.repaint_all()
             return
         log.info("drag released with selection %s", sel)
         if self.immediate_action:
             self._emit(self.immediate_action)
             return
         self._show_bar(sel)
-        self.update()
+        self.repaint_all()
 
-    def mouseDoubleClickEvent(self, e):  # noqa: N802
-        if self._sel_global():
+    def window_double_clicked(self, win: OverlayWindow, e) -> None:
+        if self.selection_global():
             self._emit(self.default_action)
 
-    # ------------------------------------------------------------ keyboard
-    def keyPressEvent(self, e):  # noqa: N802
+    def key_pressed(self, e) -> None:
         key = e.key()
         if key == Qt.Key.Key_Escape:
             self._cancel()
         elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            if self._sel_global():
+            if self.selection_global():
                 self._emit(self.default_action)
         elif key == Qt.Key.Key_C and e.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            if self._sel_global():
+            if self.selection_global():
                 self._emit("copy")
         else:
-            super().keyPressEvent(e)
+            e.ignore()
 
     # ------------------------------------------------------------ action bar
     def _show_bar(self, sel_global: QRect) -> None:
@@ -349,13 +423,20 @@ class Overlay(QWidget):
         if self._bar is not None:
             self._bar.hide()
 
+    # ------------------------------------------------------------ lifecycle
+    def show(self) -> None:
+        for w in self.windows:
+            w.show()
+        self.focus_window_under_cursor()
+        self.repaint_all()
+
     def _emit(self, action: str) -> None:
         if self._done:
             return
         if action == "cancel":
             self._cancel()
             return
-        sel = self._sel_global()
+        sel = self.selection_global()
         if not sel:
             return
         self._done = True
@@ -372,17 +453,13 @@ class Overlay(QWidget):
         self.cancelled.emit()
         self.close()
 
-    # ------------------------------------------------------------ lifecycle
-    def showEvent(self, e):  # noqa: N802
-        super().showEvent(e)
-        self.raise_()
-        self.activateWindow()
-        self.setFocus(Qt.FocusReason.OtherFocusReason)
-        _force_foreground(self)
-
-    def closeEvent(self, e):  # noqa: N802
+    def close(self) -> None:
         self._hide_bar()
         if self._bar is not None:
             self._bar.close()
             self._bar = None
-        super().closeEvent(e)
+        for w in self.windows:
+            w.close()
+        self.windows = []
+        self.window = None
+        self.deleteLater()

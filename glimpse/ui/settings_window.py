@@ -42,6 +42,7 @@ ACTION_LABELS = {
     "translate": "Capture & translate",
     "visual": "Capture & visual search",
     "songid": "Identify song",
+    "record": "Record region (starts/stops)",
 }
 
 DEFAULT_ACTIONS = [
@@ -49,6 +50,7 @@ DEFAULT_ACTIONS = [
     ("translate", "Translate"),
     ("visual", "Visual search"),
     ("qr", "Scan code / QR"),
+    ("save", "Save screenshot"),
     ("copy", "Copy image only"),
 ]
 
@@ -195,8 +197,68 @@ class SettingsWindow(QDialog):
             self.autostart_box.setToolTip("Available in the installed build")
         start_form.addRow("", self.autostart_box)
         lay.addWidget(start)
+
+        media = QGroupBox("Screenshots & recordings")
+        media_form = QFormLayout(media)
+        from ..paths import known_folder
+
+        shots_default = str(known_folder("Pictures") / "Glimpse")
+        clips_default = str(known_folder("Videos") / "Glimpse")
+        self.screens_dir = QLineEdit(self.settings.screenshot_dir or "")
+        self.screens_dir.setPlaceholderText(shots_default)
+        shots_row = QHBoxLayout()
+        shots_row.addWidget(self.screens_dir, 1)
+        shots_browse = QPushButton("Browse…")
+        shots_browse.clicked.connect(lambda: self._pick_dir(self.screens_dir, shots_default))
+        shots_row.addWidget(shots_browse)
+        media_form.addRow("Screenshots folder", shots_row)
+
+        self.clips_dir_edit = QLineEdit(self.settings.record_dir or "")
+        self.clips_dir_edit.setPlaceholderText(clips_default)
+        clips_row = QHBoxLayout()
+        clips_row.addWidget(self.clips_dir_edit, 1)
+        clips_browse = QPushButton("Browse…")
+        clips_browse.clicked.connect(lambda: self._pick_dir(self.clips_dir_edit, clips_default))
+        clips_row.addWidget(clips_browse)
+        media_form.addRow("Recordings folder", clips_row)
+
+        self.record_fps_spin = QSpinBox()
+        self.record_fps_spin.setRange(5, 30)
+        self.record_fps_spin.setSuffix(" fps")
+        self.record_fps_spin.setValue(int(getattr(self.settings, "record_fps", 15)))
+        media_form.addRow("Recording frame rate", self.record_fps_spin)
+
+        self.record_max_spin = QSpinBox()
+        self.record_max_spin.setRange(5, 3600)
+        self.record_max_spin.setSuffix(" s")
+        self.record_max_spin.setValue(int(getattr(self.settings, "record_max_seconds", 300)))
+        media_form.addRow("Recording limit", self.record_max_spin)
+
+        self.record_audio_box = QCheckBox("Record system audio with the video (muxed with ffmpeg)")
+        self.record_audio_box.setChecked(bool(getattr(self.settings, "record_audio", False)))
+        media_form.addRow("", self.record_audio_box)
+
+        from ..record import ffmpeg_available
+
+        ff = QLabel(
+            "ffmpeg: found — recordings work."
+            if ffmpeg_available()
+            else "ffmpeg: not found — recording needs it (winget install Gyan.FFmpeg)."
+        )
+        ff.setObjectName("muted")
+        ff.setWordWrap(True)
+        media_form.addRow("", ff)
+        lay.addWidget(media)
         lay.addStretch(1)
         return w
+
+    def _pick_dir(self, field: QLineEdit, fallback: str) -> None:
+        from PySide6.QtWidgets import QFileDialog
+
+        start = field.text().strip() or fallback
+        chosen = QFileDialog.getExistingDirectory(self, "Choose a folder", start)
+        if chosen:
+            field.setText(chosen)
 
     def _tab_hotkeys(self) -> QWidget:
         w = QWidget()
@@ -283,6 +345,14 @@ class SettingsWindow(QDialog):
         win_row.addWidget(win_btn)
         win_row.addStretch(1)
         eng_form.addRow("", win_row)
+        self.use_all_langs = QCheckBox(
+            "Always try every installed language (recommended)"
+        )
+        self.use_all_langs.setChecked(bool(getattr(self.settings, "ocr_use_all_languages", True)))
+        self.use_all_langs.setToolTip(
+            "Snips in any script are read by the right model — not only by the languages ticked below."
+        )
+        eng_form.addRow("", self.use_all_langs)
         lay.addWidget(eng)
 
         # ---------------------------------------------------- tesseract languages
@@ -663,9 +733,13 @@ class SettingsWindow(QDialog):
             out = []
             for label, img in samples:
                 try:
-                    res = recognize(img, language="", engine=engine, tess_languages=ticked)
+                    res = recognize(
+                        img, language="", engine=engine, tess_languages=ticked,
+                        all_languages=bool(self.use_all_langs.isChecked()),
+                    )
                     flag = " ⚠ low confidence" if res.low_confidence else ""
-                    out.append(f"{label} · {res.engine} ({res.language}){flag}: {res.text!r}")
+                    conf = f" conf {res.confidence:.0f}%" if res.confidence else ""
+                    out.append(f"{label} · {res.engine} ({res.language}){conf}{flag}: {res.text!r}")
                 except Exception as e:  # noqa: BLE001
                     out.append(f"{label} · failed: {type(e).__name__}: {e}")
             return out
@@ -741,6 +815,7 @@ class SettingsWindow(QDialog):
         idx = self.ocr_engine.findData(defaults.ocr_engine)
         self.ocr_engine.setCurrentIndex(max(0, idx))
         self.ocr_language.setCurrentIndex(0)
+        self.use_all_langs.setChecked(bool(defaults.ocr_use_all_languages))
         idx = self.visual_engine.findData(defaults.visual_engine)
         self.visual_engine.setCurrentIndex(max(0, idx))
         idx = self.audio_source.findData(defaults.audio_source)
@@ -749,6 +824,11 @@ class SettingsWindow(QDialog):
         self.show_toasts.setChecked(defaults.show_toasts)
         self.check_updates.setChecked(defaults.check_updates_on_start)
         self.update_repo.setText(defaults.update_repo)
+        self.screens_dir.setText(defaults.screenshot_dir)
+        self.clips_dir_edit.setText(defaults.record_dir)
+        self.record_fps_spin.setValue(defaults.record_fps)
+        self.record_max_spin.setValue(defaults.record_max_seconds)
+        self.record_audio_box.setChecked(defaults.record_audio)
         wanted = set(defaults.tess_languages)
         for code, item in self._lang_items().items():
             item.setCheckState(0, Qt.CheckState.Checked if code in wanted else Qt.CheckState.Unchecked)
@@ -784,6 +864,7 @@ class SettingsWindow(QDialog):
         s.ocr_engine = self.ocr_engine.currentData()
         s.ocr_language = self.ocr_language.currentData() or ""
         s.tess_languages = self._checked_codes() or ["eng"]
+        s.ocr_use_all_languages = bool(self.use_all_langs.isChecked())
         s.visual_engine = self.visual_engine.currentData()
         s.audio_source = self.audio_source.currentData()
         s.mic_device_name = self.audio_device.currentData() or ""
@@ -792,6 +873,11 @@ class SettingsWindow(QDialog):
         s.show_toasts = self.show_toasts.isChecked()
         s.check_updates_on_start = self.check_updates.isChecked()
         s.update_repo = self.update_repo.text().strip() or "Zcc09/Glimpse"
+        s.screenshot_dir = self.screens_dir.text().strip()
+        s.record_dir = self.clips_dir_edit.text().strip()
+        s.record_fps = self.record_fps_spin.value()
+        s.record_max_seconds = self.record_max_spin.value()
+        s.record_audio = self.record_audio_box.isChecked()
         # carried over, not edited here
         s.first_run_done = self.settings.first_run_done
         s.ui_settings_size = list(getattr(self.settings, "ui_settings_size", []))

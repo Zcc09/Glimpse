@@ -79,6 +79,11 @@ _MODS = {
     "meta": 0x0008,
 }
 _VK_NAMES = {
+    # F13-F24 exist purely for apps to claim: nothing else on a desktop uses them,
+    # which is why the test harness binds its hotkeys there.
+    "f13": 0x7C, "f14": 0x7D, "f15": 0x7E, "f16": 0x7F, "f17": 0x80,
+    "f18": 0x81, "f19": 0x82, "f20": 0x83, "f21": 0x84, "f22": 0x85,
+    "f23": 0x86, "f24": 0x87,
     "space": 0x20,
     "print": 0x2C,
     "printscreen": 0x2C,
@@ -162,13 +167,19 @@ class Settings:
     # engines
     ocr_engine: str = "auto"              # auto | windows | tesseract
     ocr_language: str = ""                # '' = try every installed language
-    tess_languages: list[str] = field(default_factory=lambda: ["eng", "ara"])  # Tesseract data
+    tess_languages: list[str] = field(default_factory=lambda: ["eng", "ara"])  # tried first
+    ocr_use_all_languages: bool = True    # then every other installed language, by script
     visual_engine: str = "google"         # google | yandex
     translate_engine: str = "auto"        # auto | google | mymemory
     # capture
     copy_image_on_capture: bool = True
     save_history: bool = True
     history_limit: int = 500
+    screenshot_dir: str = ""              # '' = Pictures/Glimpse
+    record_dir: str = ""                  # '' = Videos/Glimpse
+    record_fps: int = 15
+    record_max_seconds: int = 300
+    record_audio: bool = False            # mux system audio into recordings
     # audio
     audio_source: str = "system"          # system | mic
     mic_device_name: str = ""
@@ -180,6 +191,7 @@ class Settings:
             "translate": "Ctrl+Alt+T",
             "visual": "Ctrl+Alt+S",
             "songid": "Ctrl+Alt+M",
+            "record": "Ctrl+Alt+R",
         }
     )
     autostart: bool = False

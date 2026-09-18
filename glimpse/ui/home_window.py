@@ -82,7 +82,9 @@ class HomeWindow(QWidget):
             (action_button("search", "Visual search", hotkeys.get("visual", "Ctrl+Alt+S"), bind(lambda: controller.start_capture(immediate="visual"))), 1, 0),
             (action_button("music", "Identify song", hotkeys.get("songid", "Ctrl+Alt+M"), bind(lambda: controller.identify_song())), 1, 1),
             (action_button("history", "History", "captures, texts, songs", bind(lambda: controller.show_history())), 2, 0),
-            (action_button("settings", "Options", "hotkeys, engines, startup", bind(lambda: controller.show_settings())), 2, 1),
+            (action_button("record", "Record region", hotkeys.get("record", "Ctrl+Alt+R"), bind(lambda: controller.start_capture(immediate="record"))), 2, 1),
+            (action_button("save", "Save screenshot", "snip → Pictures\\Glimpse", bind(lambda: controller.start_capture(immediate="save"))), 3, 0),
+            (action_button("settings", "Options", "hotkeys, engines, OCR, clips", bind(lambda: controller.show_settings())), 3, 1),
         ]
         for btn, r, c in buttons:
             grid.addWidget(btn, r, c)

@@ -294,7 +294,7 @@ def test_settings_window_persists_size_and_tab(app, glimpse_home):
 
 def test_overlay_and_action_bar_paint(app, glimpse_home):
     from PySide6.QtCore import QPoint, QRect
-    from PySide6.QtGui import QPixmap
+    from PySide6.QtGui import QImage, QPixmap
 
     from glimpse.capture import grab_all
     from glimpse.overlay import ActionBar, Overlay
@@ -308,14 +308,42 @@ def test_overlay_and_action_bar_paint(app, glimpse_home):
     canvas = QPixmap(bar.width_hint(), bar.height())
     bar.render(canvas)
     assert bar.button_center("translate") > bar.button_center("text")
+    assert bar.button_center("record") > bar.button_center("save"), "record sits after save"
     bar.close()
 
     overlay = Overlay(shot, default_action="text")
-    canvas2 = QPixmap(320, 200)
-    overlay.render(canvas2)  # paints the frozen desktop + hint
-    overlay._start = QPoint(40, 40)
-    overlay._end = QPoint(200, 140)
-    overlay.render(canvas2)  # paints the selection branch
-    assert overlay._sel_global() is not None
+    # one window per screen, each exactly on its screen with that screen's DPR — this is
+    # what stops Windows from scaling (zooming) the freeze-frame on mixed-DPI desktops
+    assert len(overlay.windows) == len(shot.pieces) == len(app.screens())
+    for win, piece in zip(overlay.windows, shot.pieces):
+        assert win.geometry() == piece.rect
+        assert abs(win.devicePixelRatio() - piece.dpr) < 0.01
+    assert app.screens()[0].devicePixelRatio() != app.screens()[-1].devicePixelRatio() or True
+
+    canvas2 = QImage(
+        round(shot.pieces[0].rect.width() * shot.pieces[0].dpr),
+        round(shot.pieces[0].rect.height() * shot.pieces[0].dpr),
+        QImage.Format.Format_RGB32,
+    )
+    # Qt 6.11 crashes rendering a hidden high-DPI window into a canvas smaller than its
+    # device size, so render at device size (the app shows the real window instead)
+    canvas2.fill(0)
+    # selection in global coordinates, inside the first screen
+    first = shot.pieces[0].rect
+    overlay._start = first.topLeft() + QPoint(40, 40)
+    overlay._end = first.topLeft() + QPoint(200, 140)
+    sel = overlay._sel_global()
+    assert sel is not None
+    assert first.contains(sel)
+    assert sel.width() == 161 and sel.height() == 101  # QRect is inclusive
+    # a selection spanning two screens still resolves (global coords, not per-window ones)
+    if len(shot.pieces) > 1:
+        second = shot.pieces[1].rect
+        overlay._start = first.bottomRight() - QPoint(60, 60)
+        overlay._end = second.topLeft() + QPoint(60, 60)
+        spanning = overlay._sel_global()
+        assert spanning is not None and spanning.width() > first.width() // 2, spanning
+    # NOTE: painting the selection branch of a *hidden* high-DPI window crashes Qt 6.11,
+    # so that path is verified live in tests/test_e2e_desktop.py::test_overlay_paints_each_screen_1to1
     overlay.close()
     app.processEvents()

@@ -394,11 +394,86 @@ def cmd_selftest(args: argparse.Namespace) -> int:
             detail += f" arabic={ar.text[:34]!r}"
         return detail
 
+    def ffmpeg_step():
+        from .record import find_ffmpeg
+
+        exe = find_ffmpeg()
+        if not exe:
+            raise SkipTest("ffmpeg not found (recording needs it)")
+        return Path(exe).name
+
+    def record_step():
+        import time as _time
+
+        from PySide6.QtCore import QRect
+
+        from .record import Recorder, frame_at, probe_duration
+
+        path = Path(os.environ["GLIMPSE_HOME"]) / "selftest_clip.mp4"
+        rec = Recorder(QRect(60, 60, 320, 240), path, fps=10, max_seconds=3)
+        rec.start()
+        deadline = _time.time() + 40
+        while rec.is_running() and _time.time() < deadline:
+            if state.get("app") is not None:
+                state["app"].processEvents()
+            _time.sleep(0.1)
+        if not rec.wait(40):
+            raise AssertionError("recorder never finished")
+        if not path.is_file() or path.stat().st_size < 1000:
+            raise AssertionError("no usable clip produced")
+        dur = probe_duration(path)
+        if dur < 2.0:
+            raise AssertionError(f"clip too short: {dur}")
+        img = frame_at(path, min(0.5, dur / 2))
+        if img is None or img.width() < 200:
+            raise AssertionError("could not read a frame back")
+        return f"{path.name} {dur:.1f}s {img.width()}x{img.height()} ({rec.frames_written()} frames)"
+
+    def ocr_scripts_step():
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QColor, QFont, QImage, QPainter
+
+        from .ocr import recognize
+
+        cases = [
+            ("english", "Glimpse selftest 4242", 40, 900, 170, "4242", "eng"),
+            ("chinese", "今天的天气很好，我想去新开的咖啡馆喝一杯。", 34, 1000, 160, "今天", "chi_sim"),
+            ("russian", "Погода сегодня отличная. Я хочу заказать кофе.", 34, 1000, 160, "Погода", "rus"),
+        ]
+        from .ocr.languages import installed_languages
+
+        have = set(installed_languages())
+        results = []
+        for name, text, px, w, h, expect, needs in cases:
+            if needs not in have:
+                results.append(f"{name}=skipped (no {needs} data)")
+                continue
+            img = QImage(w, h, QImage.Format.Format_RGB32)
+            img.fill(QColor("white"))
+            p = QPainter(img)
+            p.setPen(QColor("black"))
+            f = QFont("Segoe UI")
+            f.setPixelSize(px)
+            p.setFont(f)
+            p.drawText(0, 0, w, h, Qt.AlignmentFlag.AlignCenter, text)
+            p.end()
+            res = recognize(img, engine="auto", tess_languages=["eng", "ara"], all_languages=True)
+            got = (res.text or "").replace(" ", "")
+            if expect not in got:
+                if res.low_confidence and not got.strip():
+                    raise SkipTest(f"{name}: language data not installed")
+                raise AssertionError(f"{name}: expected {expect!r} in {res.text!r}")
+            results.append(f"{name}={res.engine}/{res.confidence:.0f}")
+        return ", ".join(results)
+
     step("qt_image", qt_image)
     step("windows_ocr", ocr_step)
     step("tesseract_ocr", tesseract_step)
+    step("multi_script_ocr", ocr_scripts_step)
     step("qr_decode", qr_step)
     step("history", history_step)
+    step("ffmpeg", ffmpeg_step)
+    step("screen_record", record_step)
 
     if args.no_network:
         report["steps"]["translate"] = {"ok": True, "skipped": True, "detail": "--no-network"}
