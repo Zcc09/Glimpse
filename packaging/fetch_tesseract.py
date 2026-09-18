@@ -128,7 +128,25 @@ def tesseract_works(workdir: Path, tessdata: Path) -> bool:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def prune_strays() -> list[str]:
+    """Drop anything in vendor/tesseract that is not engine/runtime material.
+
+    Scratch files (test images, captured output) must never reach a release build;
+    the spec has a whitelist too, this keeps the staging folder itself honest.
+    """
+    allowed = (".exe", ".dll", ".traineddata", ".md", ".txt")
+    removed = []
+    for path in VENDOR.rglob("*"):
+        if path.is_file() and not path.name.lower().endswith(allowed):
+            removed.append(str(path.relative_to(VENDOR)))
+            path.unlink()
+    return removed
+
+
 def main() -> int:
+    strays = prune_strays()
+    if strays:
+        log(f"removed {len(strays)} stray file(s) from vendor/tesseract: {strays[:6]}")
     if (VENDOR / "tesseract.exe").is_file():
         log(f"vendor/tesseract already present ({sum(f.stat().st_size for f in VENDOR.glob('*') if f.is_file())/1e6:.0f} MB of files)")
     else:

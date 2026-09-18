@@ -17,13 +17,22 @@ datas = [
 # The bundled Tesseract OCR engine (vendor/tesseract, built by
 # packaging/fetch_tesseract.py): plain files in a folder tree, so a recursive
 # copy of the tree keeps tesseract.exe next to its DLLs and language data.
+# Only engine/runtime files are copied — a whitelist, so scratch files left in
+# the staging folder can never ride into a release (they did once).
 _tess = os.path.join(ROOT, "vendor", "tesseract")
+_ALLOWED = (".exe", ".dll", ".traineddata", ".md", ".txt")
 if os.path.isdir(_tess):
+    _skipped = []
     for _dir, _subs, _files in os.walk(_tess):
         _rel = os.path.relpath(_dir, _tess)
         _dest = "tesseract" if _rel == "." else os.path.join("tesseract", _rel)
         for _f in _files:
+            if not _f.lower().endswith(_ALLOWED):
+                _skipped.append(os.path.relpath(os.path.join(_dir, _f), ROOT))
+                continue
             datas.append((os.path.join(_dir, _f), _dest))
+    if _skipped:
+        print(f"glimpse.spec: skipped {len(_skipped)} non-runtime file(s): {_skipped[:6]}")
 else:
     print("WARNING: vendor/tesseract missing — run packaging/fetch_tesseract.py first")
 
