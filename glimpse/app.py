@@ -139,9 +139,19 @@ class GlimpseApp(QObject):
     # ---------------------------------------------------------------- hotkeys
     def _register_hotkeys(self) -> None:
         errors = self.hotkeys.set_hotkeys(self.settings.hotkeys)
+        self._hotkey_errors = dict(errors)
         for action, err in errors.items():
             log.warning("hotkey %s: %s", action, err)
             self.notify("Hotkey not registered", err, kind="warn", timeout=6000)
+
+    @property
+    def registered_hotkeys(self) -> dict:
+        """{action: spec} for the settings window, with failures marked."""
+        errors = getattr(self, "_hotkey_errors", {})
+        out = {}
+        for action, spec in (self.settings.hotkeys or {}).items():
+            out[action] = f"{spec} ✓" if action not in errors and spec else f"{spec} — failed"
+        return out
 
     def _on_hotkey(self, action: str) -> None:
         log.info("hotkey pressed: %s", action)
@@ -225,7 +235,7 @@ class GlimpseApp(QObject):
     def _run_ocr(self, image: QImage, win: ResultWindow, on_text=None) -> None:
         s = self.settings
         util.run_bg(
-            lambda: recognize(image, s.ocr_language, s.ocr_engine),
+            lambda: recognize(image, s.ocr_language, s.ocr_engine, s.tess_languages),
             on_ok=lambda res: self._ocr_done(win, res, on_text),
             on_err=lambda k, m, tb: win.set_error(f"{k}: {m}"),
             name="ocr",
@@ -574,6 +584,7 @@ class GlimpseApp(QObject):
         self.settings = new
         new.save()
         errors = self.hotkeys.set_hotkeys(new.hotkeys)
+        self._hotkey_errors = dict(errors)
         for action, err in errors.items():
             self.notify("Hotkey problem", err, kind="warn", timeout=6000)
         if autostart.supported():

@@ -322,7 +322,10 @@ class ResultWindow(QWidget):
         if not (result.text or "").strip():
             self.text_status.setText("no text found")
             self.text_edit.setPlaceholderText("No text was found in the selection.")
-        self.engine_note.setText(f"OCR: {result.engine} ({result.language})")
+        note = f"OCR: {result.engine} ({result.language})"
+        if result.low_confidence and (result.text or "").strip():
+            note += "  —  low confidence: try a tighter selection, or another engine in Options → Text"
+        self.engine_note.setText(note)
 
     def set_text(self, text: str) -> None:
         """Fill the source text without an OcrResult (e.g. re-opened from history)."""

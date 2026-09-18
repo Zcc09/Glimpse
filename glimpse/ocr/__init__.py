@@ -1,6 +1,17 @@
-"""OCR engines: Windows.Media.Ocr (default, no extra installs) + Tesseract fallback."""
+"""OCR engines and dispatch.
+
+- ``windows``   — Windows.Media.Ocr (built in). With no language given it runs every
+  installed recognizer language and keeps the best-looking result, so any language
+  pack the user has added is used automatically.
+- ``tesseract`` — the bundled Tesseract 5 engine: 126 languages, data downloaded on
+  demand into %APPDATA%/Glimpse/tessdata.
+- ``auto``      — Windows first (fast, no data files); when the result doesn't look
+  like text (e.g. Arabic text on a machine with only the English pack) Tesseract is
+  tried with the user's languages and the better result wins.
+"""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from PySide6.QtCore import QRect
@@ -21,74 +32,233 @@ class OcrResult:
     lines: list[OcrLine] = field(default_factory=list)
     language: str = ""
     engine: str = "windows"
+    low_confidence: bool = False
 
 
 class OcrError(RuntimeError):
     pass
 
 
-def _prepare_png(image: QImage, upscale_to: int = 1000, max_dim: int = 2500) -> bytes:
-    """Upscale small crops (helps OCR), clamp huge ones, encode PNG."""
+# ------------------------------------------------------------------ quality score
+_GOOD_PUNCT = set(".,;:!?()[]{}'\"-–—/\\@#$%&*+=<>|~^_`°·’”“…«»،؛؟")
+
+
+def score_text(text: str) -> float:
+    """Rough plausibility score for an OCR result (higher = more like real text).
+
+    Used to pick between languages and between engines: a wrong language usually
+    yields fewer letters/digits, more stray symbols and fewer real words.
+    """
+    t = (text or "").strip()
+    if not t:
+        return 0.0
+    chars = [c for c in t if not c.isspace()]
+    if not chars:
+        return 0.0
+    letters = sum(1 for c in chars if c.isalpha() or c.isdigit())
+    weird = sum(1 for c in chars if not (c.isalpha() or c.isdigit() or c in _GOOD_PUNCT))
+    words = [w for w in re.split(r"\s+", t) if w]
+    good_words = sum(1 for w in words if sum(1 for c in w if c.isalnum()) >= 2)
+    ratio = letters / len(chars)
+    word_quality = good_words / len(words)
+    return len(t) * (0.2 + ratio) * (0.3 + 0.7 * word_quality) - weird * 4.0
+
+
+MIN_PLAUSIBLE = 16.0  # below this the result is treated as "probably not text"
+
+
+def is_plausible(text: str) -> bool:
+    """Is this OCR output believable? Short results count when they are clean."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if score_text(t) >= MIN_PLAUSIBLE:
+        return True
+    chars = [c for c in t if not c.isspace()]
+    letters = sum(1 for c in chars if c.isalpha() or c.isdigit())
+    return len(chars) <= 12 and letters / max(1, len(chars)) >= 0.9
+
+
+# ------------------------------------------------------------------ preparation
+def _mean_luma(image: QImage) -> int:
+    """Average brightness (0-255), sampled sparsely — cheap dark-mode detection."""
+    img = image.convertToFormat(QImage.Format.Format_Grayscale8)
+    w, h = img.width(), img.height()
+    if w <= 0 or h <= 0:
+        return 255
+    ptr = bytes(img.constBits())
+    stride = img.bytesPerLine()
+    step_y, step_x = max(1, h // 32), max(1, w // 64)
+    total = n = 0
+    for y in range(0, h, step_y):
+        row = ptr[y * stride : y * stride + w]
+        for x in range(0, w, step_x):
+            total += row[x]
+            n += 1
+    return total // max(1, n)
+
+
+def _scaled(image: QImage, factor: float) -> QImage:
     from PySide6.QtCore import Qt
 
+    return image.scaled(
+        max(1, round(image.width() * factor)),
+        max(1, round(image.height() * factor)),
+        Qt.AspectRatioMode.IgnoreAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+
+
+def _invert(image: QImage) -> QImage:
+    img = image.convertToFormat(QImage.Format.Format_RGB32).copy()
+    img.invertPixels()
+    return img
+
+
+def prepare_variants(image: QImage) -> list[QImage]:
+    """The crop plus the usual rescue attempts: extra upscale, dark-mode inversion."""
+    variants = [image, _scaled(image, 1.8)]
+    if _mean_luma(image) < 110:  # dark-mode UI: engines expect dark text on light
+        variants = [_invert(image), image, _invert(_scaled(image, 1.8)), _scaled(image, 1.8)]
+    return variants
+
+
+def _prepare_png(image: QImage, min_side: int = 90, upscale_to: int = 1000, max_dim: int = 2500) -> bytes:
+    """Upscale small/thin crops (helps OCR a lot), clamp huge ones, encode PNG."""
     from ..util import png_bytes
 
     img = image
     if img.format() != QImage.Format.Format_ARGB32:
         img = img.convertToFormat(QImage.Format.Format_ARGB32)
     w, h = img.width(), img.height()
-    longest = max(w, h)
-    if longest < upscale_to and longest > 0:
-        factor = min(3.0, upscale_to / longest)
-        w, h = max(1, round(w * factor)), max(1, round(h * factor))
-        img = img.scaled(w, h, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
-    longest = max(img.width(), img.height())
-    if longest > max_dim:
-        factor = max_dim / longest
-        img = img.scaled(
-            max(1, round(img.width() * factor)),
-            max(1, round(img.height() * factor)),
-            Qt.AspectRatioMode.IgnoreAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
+    if w <= 0 or h <= 0:
+        return png_bytes(img)
+    factor = 1.0
+    short, long_ = min(w, h), max(w, h)
+    if short < min_side:
+        factor = min(5.0, min_side / short)
+    if long_ * factor < upscale_to:
+        factor = min(5.0, upscale_to / long_)
+    if long_ * factor > max_dim:  # stay inside the engines' pixel budget
+        factor = max(1.0, max_dim / long_)
+    if abs(factor - 1.0) > 0.01:
+        img = _scaled(img, factor)
     return png_bytes(img)
 
 
-def recognize(image: QImage, language: str = "", engine: str = "") -> OcrResult:
-    """Dispatch to the configured engine, falling back to the other one."""
-    engine = (engine or "windows").lower()
-    if engine == "tesseract":
-        from .tesseract_ocr import TesseractOcr, find_tesseract
+# ------------------------------------------------------------------ engines
+def _windows(image: QImage, language: str = "") -> OcrResult:
+    from .windows_ocr import recognize_windows, recognize_windows_multi
 
-        if find_tesseract():
-            return TesseractOcr().recognize(image, language)
-        log.warning("tesseract not found on PATH; using Windows OCR")
-        engine = "windows"
+    if language:
+        return recognize_windows(image, language)
+    return recognize_windows_multi(image)
+
+
+def _windows_best(image: QImage, language: str = "") -> OcrResult:
+    """Windows engine with a dark-mode rescue: invert when the crop is dark."""
+    candidates = [image]
+    if _mean_luma(image) < 110:
+        candidates.append(_invert(image))
+    best: OcrResult | None = None
+    best_score = -1.0
+    error: Exception | None = None
+    for cand in candidates:
+        try:
+            res = _windows(cand, language)
+        except Exception as e:  # noqa: BLE001
+            error = e
+            continue
+        s = score_text(res.text)
+        if s > best_score:
+            best, best_score = res, s
+    if best is None:
+        raise error or OcrError("Windows OCR failed")
+    return best
+
+
+def _tesseract(image: QImage, languages) -> OcrResult:
+    from .tesseract_ocr import TesseractOcr
+
+    return TesseractOcr().recognize(image, languages)
+
+
+def recognize(image: QImage, language: str = "", engine: str = "auto", tess_languages=None) -> OcrResult:
+    """OCR one image with the configured engine chain."""
+    return _flag(  # results that read as gibberish get flagged for the UI to explain
+        _recognize(image, language, engine, tess_languages)
+    )
+
+
+def _flag(res: OcrResult) -> OcrResult:
+    from . import is_plausible
+
+    res.low_confidence = not is_plausible(res.text)
+    return res
+
+
+def _recognize(image: QImage, language: str = "", engine: str = "auto", tess_languages=None) -> OcrResult:
+    engine = (engine or "auto").lower()
+    tess_langs = [str(c) for c in (tess_languages or []) if c] or ["eng"]
 
     if engine == "windows":
-        try:
-            from .windows_ocr import recognize_windows
+        return _windows_best(image, language)
+    if engine == "tesseract":
+        return _tesseract(image, tess_langs)
 
-            return recognize_windows(image, language)
-        except Exception as e:  # noqa: BLE001
-            log.warning("Windows OCR failed (%s); trying tesseract", e)
-            from .tesseract_ocr import TesseractOcr, find_tesseract
+    # auto: Windows (any installed language) first, Tesseract as the safety net
+    win: OcrResult | None = None
+    try:
+        win = _windows_best(image, language)
+    except Exception as e:  # noqa: BLE001
+        log.info("auto OCR: Windows engine unavailable (%s)", e)
+    win_score = score_text(win.text) if win else -1.0
+    if win is not None and win_score >= 60.0:
+        return win  # long, clean read — no need to spend a second engine
 
-            if find_tesseract():
-                return TesseractOcr().recognize(image, language)
-            raise OcrError(
-                "Windows OCR is unavailable and Tesseract is not installed. "
-                "Install a Windows language pack (Settings → Time & language → "
-                "Language & region → Add a language, with 'Optical character recognition') "
-                "or install Tesseract from UB-Mannheim."
-            ) from e
-    raise OcrError(f"unknown OCR engine: {engine}")
+    try:
+        tess = _tesseract(image, tess_langs)
+    except Exception as e:  # noqa: BLE001
+        if win is not None:
+            if not is_plausible(win.text):
+                log.info("auto OCR: tesseract unavailable too (%s)", e)
+            return win
+        raise OcrError(f"no OCR engine available ({e})") from e
+
+    if win is None:
+        return tess
+    if not tess.text.strip():
+        return win  # tesseract found nothing; Windows is all we have
+    if is_plausible(tess.text) != is_plausible(win.text):
+        return tess if is_plausible(tess.text) else win  # prefer the believable one
+    return tess if score_text(tess.text) > win_score else win
 
 
+# ------------------------------------------------------------------ capabilities
 def available_languages() -> list[str]:
+    """Windows recognizer languages (language packs installed in Windows)."""
     try:
         from .windows_ocr import available_languages as langs
 
         return langs()
+    except Exception:
+        return []
+
+
+def tesseract_available() -> bool:
+    try:
+        from .tesseract_ocr import find_tesseract
+
+        return bool(find_tesseract())
+    except Exception:
+        return False
+
+
+def tesseract_languages_installed() -> list[str]:
+    try:
+        from .languages import ensure_bundled, installed_languages
+
+        ensure_bundled()
+        return installed_languages()
     except Exception:
         return []

@@ -233,6 +233,65 @@ def test_update_dialog_renders(app, glimpse_home):
     app.processEvents()
 
 
+def test_settings_window_is_tabbed_and_resizable(app, glimpse_home):
+    from PySide6.QtCore import Qt
+
+    from glimpse.config import Settings
+    from glimpse.ui.settings_window import SettingsWindow
+
+    ctrl = StubController()
+    win = SettingsWindow(ctrl, Settings())
+    win.show()
+    app.processEvents()
+
+    tabs = [win.tabs.tabText(i) for i in range(win.tabs.count())]
+    assert tabs == [
+        "General",
+        "Hotkeys",
+        "Text (OCR)",
+        "Translation",
+        "Visual search",
+        "Audio",
+        "Updates",
+        "App",
+    ], tabs
+    assert win.maximumWidth() > 2000, "window must be freely resizable"
+    win.resize(1090, 790)
+    assert (win.width(), win.height()) == (1090, 790)
+
+    # the OCR tab lists the whole tesseract catalogue and filters it
+    assert len(win._lang_items()) == 126
+    win.lang_filter.setText("greek")
+    assert win._lang_items()["ell"].isHidden() is False
+    assert win._lang_items()["ara"].isHidden() is True
+    win.lang_filter.setText("")
+    assert win._lang_items()["ara"].isHidden() is False
+
+    # ticking languages round-trips through collect()
+    win._lang_items()["ara"].setCheckState(0, Qt.CheckState.Checked)
+    win._lang_items()["eng"].setCheckState(0, Qt.CheckState.Checked)
+    win._lang_items()["jpn"].setCheckState(0, Qt.CheckState.Unchecked)
+    collected = win._collect()
+    assert collected is not None
+    assert set(collected.tess_languages) == {"eng", "ara"}
+    assert collected.ocr_engine in ("auto", "windows", "tesseract")
+    win.close()
+    app.processEvents()
+
+
+def test_settings_window_persists_size_and_tab(app, glimpse_home):
+    from glimpse.config import Settings
+    from glimpse.ui.settings_window import SettingsWindow
+
+    win = SettingsWindow(StubController(), Settings())
+    win.tabs.setCurrentIndex(2)
+    win.resize(1010, 730)
+    win.done(0)
+    reloaded = Settings.load()
+    assert reloaded.ui_settings_size == [1010, 730]
+    assert reloaded.ui_settings_tab == 2
+
+
 def test_overlay_and_action_bar_paint(app, glimpse_home):
     from PySide6.QtCore import QPoint, QRect
     from PySide6.QtGui import QPixmap

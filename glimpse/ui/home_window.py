@@ -130,7 +130,7 @@ class HomeWindow(QWidget):
         if s is None:
             self.status_label.setText("")
             return
-        ocr = "Windows OCR" if s.ocr_engine == "windows" else "Tesseract"
+        ocr = {"windows": "Windows OCR", "tesseract": "Tesseract"}.get(s.ocr_engine, "Auto (Windows + Tesseract)")
         vis = "Google Lens" if s.visual_engine == "google" else "Yandex Images"
         audio = "system audio" if s.audio_source == "system" else "microphone"
         target = "auto (swap)" if s.target_lang == "auto" else LANGUAGES.get(s.target_lang, s.target_lang)

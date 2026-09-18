@@ -66,3 +66,46 @@ def recognize_windows(image: QImage, language: str = "") -> OcrResult:
     lang = language or "auto"
     log.debug("windows OCR: %d chars, %d lines", len(text), len(lines))
     return OcrResult(text=text, lines=lines, language=lang, engine="windows")
+
+
+_last_good: dict[str, str | None] = {"lang": None}
+
+
+def recognize_windows_multi(image: QImage, languages=None, max_languages: int = 8) -> OcrResult:
+    """Run Windows OCR over every installed recognizer language; keep the best.
+
+    Windows has one recognizer per installed language pack, so a snip in a script the
+    user has no pack for reads as garbage; running them all and scoring the output
+    picks the right one without the user having to choose.
+    """
+    from . import score_text
+
+    langs = list(languages) if languages else available_languages()
+    if not langs:
+        raise OcrError(
+            "No Windows OCR language is installed. Add one in Settings → Time & language → "
+            "Language & region (include 'Optical character recognition'), or use the bundled "
+            "Tesseract engine in Options → Text."
+        )
+    last = _last_good.get("lang")
+    ordered = ([last] if last in langs else []) + [l for l in langs if l != last]
+
+    best: OcrResult | None = None
+    best_score = -1.0
+    for tag in ordered[:max_languages]:
+        try:
+            res = recognize_windows(image, tag)
+        except Exception as e:  # noqa: BLE001
+            log.debug("windows OCR (%s) failed: %s", tag, e)
+            continue
+        res.language = tag
+        s = score_text(res.text)
+        if s > best_score:
+            best, best_score = res, s
+        if best_score >= 60.0:
+            break  # a long, clean read — no reason to try the rest
+    if best is None:
+        raise OcrError("Windows OCR failed for every installed language")
+    _last_good["lang"] = best.language
+    log.debug("windows multi OCR: best=%s score=%.1f", best.language, best_score)
+    return best

@@ -160,8 +160,9 @@ class Settings:
     target_lang: str = "auto"             # 'auto' = swap between secondary_lang and en
     secondary_lang: str = "ar"            # the "other" language for auto-swap
     # engines
-    ocr_engine: str = "windows"           # windows | tesseract
-    ocr_language: str = ""                # '' = choose automatically
+    ocr_engine: str = "auto"              # auto | windows | tesseract
+    ocr_language: str = ""                # '' = try every installed language
+    tess_languages: list[str] = field(default_factory=lambda: ["eng", "ara"])  # Tesseract data
     visual_engine: str = "google"         # google | yandex
     translate_engine: str = "auto"        # auto | google | mymemory
     # capture
@@ -184,6 +185,9 @@ class Settings:
     autostart: bool = False
     show_toasts: bool = True
     first_run_done: bool = False
+    # window state
+    ui_settings_size: list = field(default_factory=lambda: [960, 680])
+    ui_settings_tab: int = 0
     # updates
     check_updates_on_start: bool = True
     update_repo: str = "Zcc09/Glimpse"

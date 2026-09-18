@@ -15,13 +15,35 @@ Ctrl+Alt+M   identify the song playing on the system
 
 | Feature | How |
 |---|---|
-| **Text (OCR)** | Windows.Media.Ocr via `winsdk` — built in, no extra installs. Tesseract is used automatically when installed. |
+| **Text (OCR)** | Three engines behind one setting: **Auto** (Windows OCR across every installed language pack, Tesseract as safety net), **Windows OCR** (fast, built in, one recognizer per Windows language pack) and **Tesseract** (bundled with Glimpse — 126 languages, data downloaded on demand, works fully offline). Dark-mode snips are inverted automatically, small text is upscaled, and results that look like gibberish are flagged instead of shown as fact. |
 | **Translate** | Engine chain: Google (clients5) → MyMemory → deep-translator Google. Auto-swap: Arabic ⇄ your partner language, or pin a fixed target. |
 | **Visual search** | Google Lens reverse-image upload, opens the results in your browser. Yandex Images as an alternative engine. |
 | **Codes** | QR / barcodes decoded with zxing-cpp; copy or open links. |
 | **Song ID** | Records system audio through WASAPI loopback (or the mic) and asks Shazam — cover art and links in the result window. |
 | **History** | Every capture is stored locally (SQLite + PNGs) with search, filters and per-entry actions. |
 | **Solve** | When the selected text looks like an expression, a Solve button opens WolframAlpha. |
+
+## Languages (OCR)
+
+Reads any script it has data for, and tells you when it doesn't:
+
+- **Windows OCR** uses the language packs Windows has (Settings → Time & language →
+  Language & region → add a language, include *Optical character recognition*). With no
+  language chosen Glimpse runs **every** installed recognizer and keeps the best-looking
+  result, so mixed-language screen content just works.
+- **Tesseract** is bundled with the installer (engine + `eng` + orientation data, Apache-2.0).
+  Options → **Text (OCR)** lists all **126** languages with their download state — tick the ones
+  you need and press *Download ticked* (or *Download all common*, ~30 languages / ~60 MB).
+  Everything lands in `%APPDATA%\Glimpse\tessdata` and works offline afterwards.
+- **Auto** tries Windows first (it is fast) and only spends Tesseract time when the Windows
+  result doesn't look like text — e.g. Arabic, Russian or Chinese on a machine whose only
+  Windows pack is English.
+- When every engine returns something implausible the result window says *low confidence*
+  rather than pretending the gibberish is the text.
+
+`Test OCR` in the same tab renders a sample and reports which engine read it, in which
+language — a one-click check after adding language data.
+
 
 The cropped area is copied to your clipboard after every capture (Snipping-Tool behaviour,
 can be turned off). Press Enter or double-click to run your default action; the action bar
@@ -56,7 +78,7 @@ Glimpse lives in the tray (double-click or **Open Glimpse** shows the Home windo
 
 - **Open Glimpse** — Home window: Capture / Translate / Visual search / Song ID / History / Options, hotkey hints, engine status
 - Capture area · Capture & translate · Capture & visual search · Identify song
-- History… · Options… (hotkeys, engines, languages, audio, updates)
+- History… · Options… (a resizable tabbed window: General, Hotkeys, Text (OCR), Translation, Visual search, Audio, Updates, App)
 - **Run at startup** — toggles the Windows startup entry (HKCU Run key, no admin)
 - **Check for updates…** — asks GitHub for a newer release
 - Exit
@@ -115,7 +137,11 @@ copies and by the tests):
 - `tests/test_pipeline.py` — every backend for real: Windows OCR on rendered text, QR decode,
   capture/crop DPR math, history, settings, live translation, Lens/Yandex upload, WASAPI
   loopback capture of a playing tone, Shazam roundtrip.
-- `tests/test_ui_smoke.py` — constructs and paints every window (and draws every icon).
+- `tests/test_ui_smoke.py` — constructs and paints every window (and draws every icon),
+  including the tabbed settings window: tabs, resizing, the 126-language list and its filter.
+- `tests/test_ocr_languages.py` — the OCR engine chain for real: scoring/gibberish detection,
+  dark-mode inversion, the bundled Tesseract reading rendered text, and (network) downloading
+  a language and reading an Arabic sentence offline.
 - `tests/test_update.py` — version maths, asset picking, and a live check against the
   published repository (an old version must see the release, a newer one must not).
 - `tests/test_e2e_desktop.py` — drives the real app: posts a real `WM_HOTKEY` at the app's
@@ -127,10 +153,12 @@ copies and by the tests):
 Packaging / deployment / publishing:
 
 ```bash
+.venv/Scripts/python.exe packaging/fetch_tesseract.py   # stage vendor/tesseract (conda-forge build, pruned, verified)
+.venv/Scripts/python.exe packaging/seed_languages.py    # optional: pre-download common OCR languages
 bash packaging/release_check.sh                       # assets → app → frozen selftest → Setup.exe → install/uninstall test
 .venv/Scripts/python.exe packaging/install_test.py [path-to-Setup.exe]
 .venv/Scripts/python.exe packaging/test_wizard.py [path-to-Setup.exe]
-.venv/Scripts/python.exe packaging/publish_release.py --version 0.2.0 --notes release_notes_v0.2.0.md
+.venv/Scripts/python.exe packaging/publish_release.py --version 0.3.0 --notes release_notes_v0.3.0.md
 .venv/Scripts/python.exe packaging/verify_update.py   # the frozen exe's update check vs the published release
 ```
 
@@ -142,8 +170,10 @@ checks the folder + registry entry are gone and your data survived.
 ## Layout
 
 - `glimpse/app.py` — tray icon, hotkeys, capture flow, updates; `overlay.py` the selector + action bar
-- `glimpse/ocr/`, `translate.py`, `visual.py`, `qrscan.py`, `audio.py`, `history.py`, `update.py` — the backends
-- `glimpse/ui/` — home, result, song, history, settings windows, update dialog, toasts, listening pill
+- `glimpse/ocr/` — engine dispatch (`__init__.py`), Windows OCR, bundled Tesseract, the 126-language catalogue + downloads
+- `glimpse/translate.py`, `visual.py`, `qrscan.py`, `audio.py`, `history.py`, `update.py` — the backends
+- `glimpse/ui/` — home, result, song, history, tabbed settings windows, update dialog, toasts, listening pill
+- `vendor/tesseract/` — the bundled OCR engine (built locally by `packaging/fetch_tesseract.py`, not tracked in git)
 - `packaging/` — PyInstaller specs, setup wizard, version info, release check, publish + verify scripts
 - `scripts/probe_env.py`, `scripts/probe_hotkey.py` — capability probes for a new machine
 

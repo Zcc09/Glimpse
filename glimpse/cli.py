@@ -355,8 +355,48 @@ def cmd_selftest(args: argparse.Namespace) -> int:
         song = identify_song(path)
         return f"recorded {path}; shazam={'match: ' + song.title if song else 'no match (api ok)'}"
 
+    def tesseract_step():
+        from .ocr import recognize
+        from .ocr.tesseract_ocr import find_tesseract
+
+        exe = find_tesseract()
+        if not exe:
+            raise SkipTest("tesseract is not bundled or installed")
+        res = recognize(state["image"], engine="tesseract", tess_languages=["eng"])
+        if "4242" not in (res.text or ""):
+            raise AssertionError(f"tesseract OCR returned unexpected text: {res.text!r}")
+        detail = f"exe={Path(exe).name} engine={res.engine} text={res.text!r}"
+
+        from .ocr import tesseract_languages_installed
+
+        langs = tesseract_languages_installed()
+        detail += f" langs={len(langs)}"
+        if "ara" in langs:  # proves a non-Latin script end to end
+            from PySide6.QtCore import Qt
+            from PySide6.QtGui import QColor, QFont, QImage, QPainter
+
+            img = QImage(1200, 200, QImage.Format.Format_RGB32)
+            img.fill(QColor("white"))
+            p = QPainter(img)
+            p.setPen(QColor("black"))
+            f = QFont("Segoe UI")
+            f.setPixelSize(40)
+            p.setFont(f)
+            p.drawText(
+                0, 0, 1200, 200, Qt.AlignmentFlag.AlignCenter,
+                "الطقس جميل اليوم. أريد أن أطلب قهوة من المقهى الجديد.",
+            )
+            p.end()
+            ar = recognize(img, engine="tesseract", tess_languages=["ara", "eng"])
+            arabic_chars = sum(1 for c in (ar.text or "") if "\u0600" <= c <= "\u06FF")
+            if arabic_chars < 8:
+                raise AssertionError(f"arabic OCR returned unexpected text: {ar.text!r}")
+            detail += f" arabic={ar.text[:34]!r}"
+        return detail
+
     step("qt_image", qt_image)
     step("windows_ocr", ocr_step)
+    step("tesseract_ocr", tesseract_step)
     step("qr_decode", qr_step)
     step("history", history_step)
 

@@ -91,6 +91,29 @@ QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; width: 0; }}
 QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 2px; }}
 QScrollBar::handle:horizontal {{ background: #2c3b44; border-radius: 5px; min-width: 30px; }}
 
+QTabWidget::pane {{ border: 1px solid {BORDER}; border-radius: 10px; background: {PANEL}; top: -1px; }}
+QTabBar::tab {{
+    background: transparent; color: {MUTED}; padding: 7px 13px; margin-right: 3px;
+    border: 1px solid transparent; border-radius: 8px; font-weight: 600;
+}}
+QTabBar::tab:hover {{ color: {TEXT}; background: #1a242b; }}
+QTabBar::tab:selected {{ color: white; background: {SEL}; border-color: #2b4a6b; }}
+
+QTreeWidget {{ background: {PANEL2}; border: 1px solid {BORDER}; border-radius: 8px; outline: none; }}
+QTreeWidget::item {{ padding: 5px 4px; }}
+QTreeWidget::item:hover {{ background: #1a242b; }}
+QTreeWidget::item:selected {{ background: {SEL}; color: white; }}
+QHeaderView::section {{
+    background: {PANEL}; color: {TEAL_TEXT}; border: none; border-bottom: 1px solid {BORDER};
+    padding: 5px 7px; font-weight: 600;
+}}
+
+QProgressBar {{
+    background: {PANEL2}; border: 1px solid {BORDER}; border-radius: 7px; height: 14px;
+    text-align: center; color: {TEXT}; font-size: 11px;
+}}
+QProgressBar::chunk {{ background: {BLUE}; border-radius: 6px; }}
+
 QMenu {{ background: #141b20; border: 1px solid {BORDER2}; border-radius: 9px; padding: 5px; }}
 QMenu::item {{ padding: 6px 22px 6px 12px; border-radius: 6px; }}
 QMenu::item:selected {{ background: {SEL}; }}

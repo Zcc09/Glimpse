@@ -13,6 +13,20 @@ datas = [
     (os.path.join(ROOT, "assets", "glimpse.ico"), "assets"),
     (os.path.join(ROOT, "assets", "test_qr.png"), "assets"),
 ]
+
+# The bundled Tesseract OCR engine (vendor/tesseract, built by
+# packaging/fetch_tesseract.py): plain files in a folder tree, so a recursive
+# copy of the tree keeps tesseract.exe next to its DLLs and language data.
+_tess = os.path.join(ROOT, "vendor", "tesseract")
+if os.path.isdir(_tess):
+    for _dir, _subs, _files in os.walk(_tess):
+        _rel = os.path.relpath(_dir, _tess)
+        _dest = "tesseract" if _rel == "." else os.path.join("tesseract", _rel)
+        for _f in _files:
+            datas.append((os.path.join(_dir, _f), _dest))
+else:
+    print("WARNING: vendor/tesseract missing — run packaging/fetch_tesseract.py first")
+
 binaries = []
 hiddenimports = ["glimpse.app", "glimpse.cli", "glimpse.overlay", "glimpse.ui.theme"]
 
