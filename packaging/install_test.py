@@ -128,6 +128,26 @@ def main() -> int:
     check("installed exe --capture", r.returncode == 0 and png.is_file() and png.stat().st_size > 10000,
           f"{png.stat().st_size if png.is_file() else 0} bytes")
 
+    # ---------------------------------------------------------------- in-place update
+    # this is exactly what the in-app updater runs: Setup again, silently, with no
+    # --install-dir — it must reuse the folder the registry points at
+    default_dir = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / APP_NAME
+    r = run(setup_cmd + ["--silent", "--json", "--no-desktop-shortcut", "--no-startmenu-shortcut"])
+    raw2 = (r.stdout or b"").decode("utf-8", "replace")
+    state2 = {}
+    for line in reversed(raw2.strip().splitlines()):
+        if line.strip().startswith("{"):
+            try:
+                state2 = json.loads(line.strip())
+                break
+            except Exception:
+                continue
+    check("update run reused the existing folder", Path(state2.get("install_dir", "")) == install_dir,
+          f"reported={state2.get('install_dir')} expected={install_dir}")
+    check("update run did not create a second copy", not default_dir.exists() or default_dir == install_dir,
+          f"{default_dir} exists: {default_dir.exists()}")
+    check("app still runs after the update run", run([str(exe), "--version"], timeout=60).returncode == 0)
+
     # ---------------------------------------------------------------- uninstall
     r = run([str(exe), "--uninstall", "--silent"], timeout=120)
     check("uninstall exit code 0", r.returncode == 0, (r.stdout or b"").decode("utf-8", "replace").strip()[:120])

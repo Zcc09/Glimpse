@@ -49,6 +49,17 @@ def run_check(env_extra: dict) -> dict:
     return {"rc": r.returncode, "data": data, "stdout": text[:400]}
 
 
+def older_than(version: str) -> str:
+    """A version strictly lower than `version` with the same shape (0.2.0 → 0.1.0)."""
+    parts = [int(x) for x in re.findall(r"\d+", version)] or [0]
+    for i in range(len(parts) - 1, -1, -1):
+        if parts[i] > 0:
+            parts[i] -= 1
+            parts[i + 1:] = [0] * (len(parts) - i - 1)
+            return ".".join(str(p) for p in parts)
+    return "0.0.1" if version != "0.0.1" else "0.0.0"
+
+
 def main() -> int:
     if not EXE.is_file():
         print(f"missing {EXE} — build first")
@@ -62,7 +73,7 @@ def main() -> int:
     check(f"no update needed for {PKG_VERSION}", data.get("update_available") is False and not data.get("error"),
           f"available={data.get('update_available')} error={data.get('error')}")
 
-    older = ".".join(["0"] + PKG_VERSION.split(".")[1:])  # same length, lower major
+    older = older_than(PKG_VERSION)
     old = run_check({"GLIMPSE_VERSION_OVERRIDE": older})
     odata = old["data"] or {}
     check(f"{older} sees the update", odata.get("update_available") is True, json.dumps(odata.get("latest"))[:200])
@@ -72,6 +83,25 @@ def main() -> int:
           str(latest.get("page_url")))
     check("Setup asset listed", any(str(a).lower().endswith(".exe") for a in (latest.get("assets") or [])),
           str(latest.get("assets")))
+
+    # the download path the updater uses, against the real release asset
+    sys.path.insert(0, str(ROOT))
+    from glimpse import update as upd
+
+    info = upd.check_for_update("Zcc09/Glimpse", current="0.0.1")
+    asset = info.installer_asset() if info else None
+    if asset is None:
+        check("installer asset downloadable", False, "no .exe asset on the release")
+    else:
+        dest = Path(tempfile.mkdtemp(prefix="glimpse-dl-")) / asset.name
+        try:
+            upd.download(asset.url, dest)
+            head = dest.read_bytes()[:2]
+            size_ok = asset.size == 0 or abs(dest.stat().st_size - asset.size) < 1024
+            check("installer asset downloadable", head == b"MZ" and size_ok,
+                  f"{dest.stat().st_size} bytes, header={head!r}")
+        except Exception as e:  # noqa: BLE001
+            check("installer asset downloadable", False, f"{type(e).__name__}: {e}")
 
     passed = sum(1 for _n, ok, _d in results if ok)
     print(f"\n{passed}/{len(results)} checks passed")
