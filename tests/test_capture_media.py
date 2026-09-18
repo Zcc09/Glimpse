@@ -184,6 +184,41 @@ def test_ffmpeg_is_discoverable():
     assert probe is None or Path(probe).is_file()
 
 
+@pytest.mark.audio
+def test_recording_muxes_system_audio(app, tmp_path):
+    """record_audio=True must end up as an MP4 with a real audio stream in it."""
+    import subprocess
+    import time
+
+    from PySide6.QtCore import QRect
+
+    from glimpse.audio import list_sources
+    from glimpse.record import Recorder, find_ffprobe, probe_duration
+
+    if not list_sources():
+        pytest.skip("no loopback/mic device on this machine")
+    if find_ffprobe() is None:
+        pytest.skip("ffprobe not installed")
+
+    out = tmp_path / "with_audio.mp4"
+    rec = Recorder(QRect(80, 80, 480, 360), out, fps=10, max_seconds=5, audio=True)
+    rec.start()
+    t0 = time.time()
+    while rec.is_running() and time.time() - t0 < 60:
+        app.processEvents()
+        time.sleep(0.05)
+    assert rec.wait(60), "recorder did not finish"
+    assert out.is_file() and out.stat().st_size > 2000
+
+    streams = subprocess.run(
+        [find_ffprobe(), "-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(out)],
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "audio" in streams, f"no audio stream muxed in (ffprobe: {streams!r})"
+    assert probe_duration(out) >= 3.0
+
+
 # ------------------------------------------------------------------ screenshots
 def test_screenshot_folder_defaults_to_pictures(tmp_path, monkeypatch):
     from glimpse.paths import known_folder

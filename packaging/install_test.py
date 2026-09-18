@@ -132,6 +132,7 @@ def main() -> int:
     # this is exactly what the in-app updater runs: Setup again, silently, with no
     # --install-dir — it must reuse the folder the registry points at
     default_dir = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / APP_NAME
+    default_existed_before = default_dir.exists()  # the developer's own install lives there
     r = run(setup_cmd + ["--silent", "--json", "--no-desktop-shortcut", "--no-startmenu-shortcut"])
     raw2 = (r.stdout or b"").decode("utf-8", "replace")
     state2 = {}
@@ -144,8 +145,9 @@ def main() -> int:
                 continue
     check("update run reused the existing folder", Path(state2.get("install_dir", "")) == install_dir,
           f"reported={state2.get('install_dir')} expected={install_dir}")
-    check("update run did not create a second copy", not default_dir.exists() or default_dir == install_dir,
-          f"{default_dir} exists: {default_dir.exists()}")
+    created_default = default_dir.exists() and not default_existed_before
+    check("update run did not create a second copy", not created_default,
+          f"{default_dir} (existed before this run: {default_existed_before})")
     check("app still runs after the update run", run([str(exe), "--version"], timeout=60).returncode == 0)
 
     # ---------------------------------------------------------------- uninstall
