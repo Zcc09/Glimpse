@@ -222,11 +222,43 @@ class SettingsWindow(QDialog):
         clips_row.addWidget(clips_browse)
         media_form.addRow("Recordings folder", clips_row)
 
-        self.record_fps_spin = QSpinBox()
-        self.record_fps_spin.setRange(5, 30)
-        self.record_fps_spin.setSuffix(" fps")
-        self.record_fps_spin.setValue(int(getattr(self.settings, "record_fps", 15)))
-        media_form.addRow("Recording frame rate", self.record_fps_spin)
+        self.record_fps_combo = QComboBox()
+        for rate in (15, 24, 30, 60):
+            self.record_fps_combo.addItem(f"{rate} fps", rate)
+        current_fps = int(getattr(self.settings, "record_fps", 30))
+        index = self.record_fps_combo.findData(current_fps)
+        if index < 0:
+            self.record_fps_combo.addItem(f"{current_fps} fps", current_fps)
+            index = self.record_fps_combo.count() - 1
+        self.record_fps_combo.setCurrentIndex(index)
+        media_form.addRow("Recording frame rate", self.record_fps_combo)
+
+        from ..record import CODEC_LABELS, available_encoders, ddagrab_available, pick_encoder
+
+        self.record_codec_combo = QComboBox()
+        for value, label in CODEC_LABELS.items():
+            self.record_codec_combo.addItem(label, value)
+        wanted = getattr(self.settings, "record_codec", "auto")
+        idx = self.record_codec_combo.findData(wanted)
+        self.record_codec_combo.setCurrentIndex(max(0, idx))
+        media_form.addRow("Recording codec", self.record_codec_combo)
+
+        self.record_hw_box = QCheckBox("Use GPU encoders and GPU desktop capture (NVENC / QSV / AMF)")
+        self.record_hw_box.setChecked(bool(getattr(self.settings, "record_hw", True)))
+        media_form.addRow("", self.record_hw_box)
+
+        # tell the user what will actually be used on this machine
+        if available_encoders():
+            enc, is_hw = pick_encoder(wanted, prefer_hw=self.record_hw_box.isChecked())
+            capture = "GPU capture (Desktop Duplication)" if ddagrab_available() else "CPU screen grabs"
+            detect = QLabel(
+                f"Detected: {enc or 'no encoder'} ({'hardware' if is_hw else 'software'}) · {capture}"
+            )
+        else:
+            detect = QLabel("Detected: ffmpeg not available")
+        detect.setObjectName("muted")
+        detect.setWordWrap(True)
+        media_form.addRow("", detect)
 
         self.record_max_spin = QSpinBox()
         self.record_max_spin.setRange(5, 3600)
@@ -826,7 +858,10 @@ class SettingsWindow(QDialog):
         self.update_repo.setText(defaults.update_repo)
         self.screens_dir.setText(defaults.screenshot_dir)
         self.clips_dir_edit.setText(defaults.record_dir)
-        self.record_fps_spin.setValue(defaults.record_fps)
+        self.record_fps_combo.setCurrentIndex(max(0, self.record_fps_combo.findData(defaults.record_fps)))
+        idx = self.record_codec_combo.findData(defaults.record_codec)
+        self.record_codec_combo.setCurrentIndex(max(0, idx))
+        self.record_hw_box.setChecked(bool(defaults.record_hw))
         self.record_max_spin.setValue(defaults.record_max_seconds)
         self.record_audio_box.setChecked(defaults.record_audio)
         wanted = set(defaults.tess_languages)
@@ -875,7 +910,9 @@ class SettingsWindow(QDialog):
         s.update_repo = self.update_repo.text().strip() or "Zcc09/Glimpse"
         s.screenshot_dir = self.screens_dir.text().strip()
         s.record_dir = self.clips_dir_edit.text().strip()
-        s.record_fps = self.record_fps_spin.value()
+        s.record_fps = int(self.record_fps_combo.currentData() or 30)
+        s.record_codec = self.record_codec_combo.currentData() or "auto"
+        s.record_hw = self.record_hw_box.isChecked()
         s.record_max_seconds = self.record_max_spin.value()
         s.record_audio = self.record_audio_box.isChecked()
         # carried over, not edited here

@@ -56,11 +56,15 @@ language — a one-click check after adding language data.
   to `Pictures\Glimpse` (configurable in Options → General) and offers to open the folder.
 - **Recordings**: **Ctrl+Alt+R**, tray → *Record region…*, or the bar's **Record** button, then
   drag the area. A red frame marks the region and a **REC mm:ss · Stop** pill sits outside it
-  (press the hotkey again or click Stop). The MP4 lands in `Videos\Glimpse` at native
-  resolution; **system audio can be muxed in** (Options → General). Recording needs ffmpeg —
-  the Options window reports which copy it found.
+  (press the hotkey again or click Stop). Options → General chooses the **frame rate
+  (15/24/30/60)**, the **codec (Auto / AV1 / HEVC / H.264)** and whether to use **hardware**:
+  the region is captured through Desktop Duplication inside ffmpeg and encoded with
+  NVENC/QSV/AMF when available, falling back to CPU grabs and libx264/libx265/SVT-AV1. The
+  same tab shows what will actually be used (*"Detected: av1_nvenc (hardware) · GPU capture"*).
+  Recording needs ffmpeg — the Options window reports which copy it found.
 - The **clip window** opens when a recording finishes: scrub frames, **Trim & save as…**
   (instant, stream copy), open, open folder, copy path, delete, or **Send frame to Google Lens**.
+  It shows the codec, duration and size.
 
 ## Multi-monitor notes
 

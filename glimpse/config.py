@@ -177,8 +177,10 @@ class Settings:
     history_limit: int = 500
     screenshot_dir: str = ""              # '' = Pictures/Glimpse
     record_dir: str = ""                  # '' = Videos/Glimpse
-    record_fps: int = 15
+    record_fps: int = 30                  # 5-60
     record_max_seconds: int = 300
+    record_codec: str = "auto"            # auto | av1 | hevc | h264
+    record_hw: bool = True                # GPU encoders + Desktop Duplication capture
     record_audio: bool = False            # mux system audio into recordings
     # audio
     audio_source: str = "system"          # system | mic

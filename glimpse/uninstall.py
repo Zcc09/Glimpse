@@ -12,6 +12,7 @@ import sys
 import tempfile
 
 from . import __app_name__
+from . import proc as proc_mod
 from .log import log
 
 CRLF = "\r\n"
@@ -77,7 +78,7 @@ def close_other_instances() -> bool:
     for pid in {os.getpid(), os.getppid()}:
         cmd += ["/FI", f"PID ne {pid}"]
     try:
-        r = subprocess.run(cmd, capture_output=True, creationflags=CREATE_NO_WINDOW)
+        r = proc_mod.run(cmd, capture_output=True)
         return r.returncode == 0
     except Exception:
         return False
@@ -96,7 +97,7 @@ def spawn_folder_delete(folder: str) -> bool:
             f.write(")" + CRLF)
             f.write(":done" + CRLF)
             f.write('del /f /q "%~f0"' + CRLF)
-        subprocess.Popen(["cmd", "/c", bat], creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS)
+        proc_mod.popen(["cmd", "/c", bat], creationflags=proc_mod.DETACHED_PROCESS)
         return True
     except Exception as e:  # noqa: BLE001
         log.warning("could not schedule folder delete: %s", e)

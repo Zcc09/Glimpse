@@ -662,6 +662,8 @@ class GlimpseApp(QObject):
             audio=s.record_audio,
             audio_source=s.audio_source,
             audio_device=s.mic_device_name,
+            codec=getattr(s, "record_codec", "auto"),
+            hardware=getattr(s, "record_hw", True),
         )
         rec.finished.connect(self._recording_finished)
         rec.failed.connect(self._recording_failed)
@@ -675,7 +677,8 @@ class GlimpseApp(QObject):
             self.record_action.setText("Stop recording")
         self.notify(
             "Recording",
-            f"{region.width()}×{region.height()} · press {s.hotkeys.get('record', 'Ctrl+Alt+R')} or Stop to finish",
+            f"{region.width()}×{region.height()} · {rec.describe()} · press "
+            f"{s.hotkeys.get('record', 'Ctrl+Alt+R')} or Stop to finish",
             kind="success",
             timeout=4500,
         )

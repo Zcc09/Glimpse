@@ -28,7 +28,7 @@ import time
 from ctypes import wintypes
 
 APP_NAME = "Glimpse"
-APP_VERSION_FALLBACK = "0.4.1"
+APP_VERSION_FALLBACK = "0.5.0"
 PUBLISHER = "Glimpse"
 UNINSTALL_KEY = rf"Software\Microsoft\Windows\CurrentVersion\Uninstall\{APP_NAME}"
 ICON_NAME = "glimpse.ico"

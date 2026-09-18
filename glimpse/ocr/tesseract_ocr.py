@@ -18,6 +18,7 @@ from pathlib import Path
 
 from PySide6.QtGui import QImage
 
+from .. import proc as proc_mod
 from ..log import log
 from ..paths import resource_path
 from . import OcrError, OcrResult, _prepare_png
@@ -99,7 +100,7 @@ class TesseractOcr:
         try:
             with os.fdopen(fd, "wb") as f:
                 f.write(png)
-            proc = subprocess.run(
+            proc = proc_mod.run(
                 [
                     self.exe, path, "stdout", "-l", langs, "--tessdata-dir", str(tessdata),
                     "--psm", psm, "-c", "tessedit_create_tsv=1",

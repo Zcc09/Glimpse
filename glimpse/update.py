@@ -16,6 +16,7 @@ from typing import Callable, Optional
 import requests
 
 from . import __app_name__, __version__
+from . import proc as proc_mod
 from .log import log
 
 GITHUB_API = "https://api.github.com"
@@ -178,9 +179,9 @@ def launch_installer(path: Path, silent: bool = True, launch_after: bool = True)
         args.append("--silent")
     if launch_after:
         args.append("--launch")
-    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    flags = proc_mod.DETACHED_PROCESS | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     try:
-        subprocess.Popen(args, cwd=str(Path(path).parent), creationflags=flags, close_fds=True)
+        proc_mod.popen(args, cwd=str(Path(path).parent), creationflags=flags, close_fds=True)
         return True
     except Exception as e:  # noqa: BLE001
         log.warning("could not launch installer: %s", e)

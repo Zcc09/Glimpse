@@ -20,8 +20,9 @@ from PySide6.QtWidgets import (
 )
 
 from .. import icons, util
+from .. import proc as proc_mod
 from ..log import log
-from ..record import frame_at, probe_duration, trim_clip
+from ..record import clip_codec, frame_at, probe_duration, trim_clip
 from . import theme as T
 
 
@@ -35,7 +36,7 @@ def open_in_player(path: str) -> None:
         if os.name == "nt":
             os.startfile(path)  # noqa: S606
         else:
-            subprocess.Popen(["xdg-open", path])
+            proc_mod.popen(["xdg-open", path])
     except Exception as e:  # noqa: BLE001
         log.warning("could not open %s: %s", path, e)
 
@@ -64,7 +65,9 @@ class ClipWindow(QDialog):
         root.addWidget(title)
 
         size_mb = Path(self.path).stat().st_size / 1e6 if Path(self.path).exists() else 0.0
-        self.meta = QLabel(f"{_mmss(self.duration)} · {size_mb:.1f} MB · {self.path}")
+        codec = clip_codec(self.path)
+        prefix = f"{codec.upper()} · " if codec else ""
+        self.meta = QLabel(f"{prefix}{_mmss(self.duration)} · {size_mb:.1f} MB · {self.path}")
         self.meta.setObjectName("muted")
         self.meta.setWordWrap(True)
         root.addWidget(self.meta)

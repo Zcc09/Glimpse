@@ -266,3 +266,99 @@ def test_next_capture_path_avoids_collisions(tmp_path):
     first.write_text("x")
     second = GlimpseApp._next_capture_path(stub, tmp_path, "Screenshot")
     assert second != first and second.name.endswith("-2.png")
+
+
+# ------------------------------------------------------------------ recording quality
+def test_encoder_detection_and_picking():
+    """Hardware encoders must be found and preferred; software is the fallback."""
+    from glimpse.record import available_encoders, ddagrab_available, encoder_args, pick_encoder
+
+    have = available_encoders()
+    if not have:
+        pytest.skip("ffmpeg not installed")
+
+    name, is_hw = pick_encoder("auto", prefer_hw=True)
+    assert name, "no encoder at all"
+    if any(k.endswith("_nvenc") for k in have):
+        assert name.endswith("_nvenc") and is_hw, f"expected an NVENC encoder, got {name}"
+
+    sw_name, sw_hw = pick_encoder("h264", prefer_hw=False)
+    assert not sw_hw and sw_name in ("libx264", "libx265", "mpeg4"), sw_name
+
+    for codec, expected in (("av1", ("av1",)), ("hevc", ("hevc",)), ("h264", ("h264",))):
+        picked, _hw = pick_encoder(codec, prefer_hw=True)
+        if picked:
+            assert expected[0] in picked, f"{codec} → {picked}"
+
+    args = encoder_args(name)
+    assert "-c:v" in args and args[args.index("-c:v") + 1] == name
+    assert ddagrab_available() in (True, False)   # callable, cached, no crash
+
+
+def test_recording_60fps_hardware(app, tmp_path):
+    """60 fps must be reachable through the GPU path with a real hardware encoder."""
+    import subprocess
+    import time
+
+    from PySide6.QtCore import QRect
+
+    from glimpse.record import Recorder, available_encoders, ddagrab_available, find_ffprobe, probe_duration
+
+    if not available_encoders():
+        pytest.skip("ffmpeg not installed")
+
+    out = tmp_path / "fast.mp4"
+    rec = Recorder(QRect(200, 200, 960, 540), out, fps=60, max_seconds=5, codec="auto", hardware=True)
+    assert rec.encoder, "no encoder chosen"
+    rec.start()
+    t0 = time.time()
+    while rec.is_running() and time.time() - t0 < 120:
+        app.processEvents()
+        time.sleep(0.05)
+    assert rec.wait(60), "recorder did not finish"
+    assert out.is_file() and out.stat().st_size > 5000
+
+    duration = probe_duration(out)
+    assert duration >= 4.0, f"clip too short for a 5 s recording: {duration}"
+    info = subprocess.run(
+        [find_ffprobe(), "-v", "error", "-select_streams", "v:0", "-show_entries",
+         "stream=codec_name,avg_frame_rate", "-of", "csv=p=0", str(out)],
+        capture_output=True, text=True,
+    ).stdout.strip()
+    codec_name, rate = (info.split(",") + ["", ""])[:2]
+    assert codec_name in ("av1", "hevc", "h264"), info
+    num, _, den = rate.partition("/")
+    fps = float(num) / float(den or 1)
+    assert fps >= 55, f"expected ~60 fps, ffprobe says {rate}"
+    if ddagrab_available() and rec.encoder.endswith("_nvenc"):
+        assert rec.backend == "gpu", f"expected GPU capture, got {rec.backend}"
+
+
+def test_cpu_fallback_keeps_real_time(app, tmp_path):
+    """Without GPU capture the clip must still last as long as the recording did.
+
+    The pump cannot always grab at 60 fps; the recorder repeats frames so the timeline stays
+    honest instead of writing a clip that plays back faster than reality.
+    """
+    import time
+
+    from PySide6.QtCore import QRect
+
+    from glimpse.record import Recorder, available_encoders, probe_duration
+
+    if not available_encoders():
+        pytest.skip("ffmpeg not installed")
+
+    out = tmp_path / "pump.mp4"
+    rec = Recorder(QRect(200, 200, 960, 540), out, fps=60, max_seconds=5, codec="h264", hardware=False)
+    assert rec.backend in ("", "cpu")
+    t0 = time.time()
+    rec.start()
+    while rec.is_running() and time.time() - t0 < 120:
+        app.processEvents()
+        time.sleep(0.05)
+    wall = time.time() - t0
+    assert rec.wait(60)
+    duration = probe_duration(out)
+    assert rec.backend == "cpu"
+    assert duration >= wall * 0.8, f"clip ({duration:.2f}s) does not match real time ({wall:.2f}s)"
