@@ -181,14 +181,42 @@ class TesseractOcr:
             passes = [last] + [p for p in passes if p != last]
 
         best: _Pass | None = None
+        variants = prepare_variants(image)
+        # Each variant gets the *full* pass list: the upscaled variant is the one that
+        # rescues small/borderline text (a 1100x170 Persian line reads nothing at native
+        # size and reads perfectly at 1.3x), and a shared run budget spent it on the
+        # original before the upscale was ever tried. The wall-clock budget is the real
+        # limit here, plus the early exit below for anything that reads cleanly.
+        budget = max(2, max_passes) * len(variants)
         runs = 0
         deadline = time.monotonic() + _TIME_BUDGET
-        for variant in prepare_variants(image):
+        tried: set[tuple[str, ...]] = set()
+
+        def sibling_batches(langs: list[str]) -> bool:
+            """Another untried batch of the *same* script is still waiting.
+
+            A script with more languages than one pass holds becomes several passes; the
+            first batch reads Turkish/Vietnamese with an English model (~90) while the batch
+            that owns those languages reads them perfectly (~96). A good-enough read from the
+            first batch must therefore not end the search — unless it is *really* sure.
+            """
+            script = langdata.SCRIPT_OF.get(langs[0])
+            if not script:
+                return False
+            for other in passes[:max_passes]:
+                if tuple(other) in tried:
+                    continue
+                if langdata.SCRIPT_OF.get(other[0]) == script:
+                    return True
+            return False
+
+        for variant in variants:
             png = _prepare_png(variant)
             for langs in passes[:max_passes]:
-                if runs >= max_passes or time.monotonic() > deadline:
+                if runs >= budget or time.monotonic() > deadline:
                     break
                 runs += 1
+                tried.add(tuple(langs))
                 try:
                     cand = self._pass(png, langs, tessdata, langdata.cjk_space_fix)
                 except OcrError as e:
@@ -200,6 +228,7 @@ class TesseractOcr:
                     cand.rank >= _CONFIDENT_RANK
                     and is_plausible(cand.text)
                     and junk_ratio_of(cand.text) < 0.2
+                    and (cand.mean_conf >= 93.0 or not sibling_batches(langs))
                 ):
                     break  # this pass is sure of itself and reads clean
             if (
@@ -207,6 +236,7 @@ class TesseractOcr:
                 and best.rank >= _CONFIDENT_RANK
                 and is_plausible(best.text)
                 and junk_ratio_of(best.text) < 0.2
+                and (best.mean_conf >= 93.0 or not sibling_batches(best.langs))
             ):
                 break
 

@@ -210,8 +210,11 @@ SCRIPT_ORDER = (
 # a pass is capped so loading a dozen models does not turn one snip into a coffee break
 MAX_LANGS_PER_PASS = 6
 
-# the languages worth trying first inside the big Latin family
-_LATIN_PRIORITY = ("eng", "fra", "deu", "spa", "ita", "por", "nld", "pol", "tur", "ind", "vie")
+# The languages worth trying first inside the big Latin family. Order matters more than
+# it should: within one pass the early languages dominate the model mixture, and Turkish
+# and Vietnamese only keep their diacritics when they follow English directly
+# (eng+tur+vie+ind+nld+pol reads them at ~96, eng+nld+pol+tur+ind+vie at ~93 with 'gok'/'igmek').
+_LATIN_PRIORITY = ("eng", "fra", "deu", "spa", "ita", "por", "tur", "vie", "ind", "nld", "pol")
 # per-script ordering hints (the first ones are tried before the rarest)
 SCRIPT_PRIORITY: dict[str, tuple] = {
     "latin": _LATIN_PRIORITY,
@@ -223,13 +226,17 @@ SCRIPT_PRIORITY: dict[str, tuple] = {
 
 
 def script_passes(installed, preferred=(), limit: int = MAX_LANGS_PER_PASS) -> list[list[str]]:
-    """Recognition passes: one per script over the installed languages.
+    """Recognition passes: one per script over the installed languages, best guess first.
 
-    Ticking a language does not narrow the search — it only decides which *script* is
-    tried first, and which language inside that script is ranked before the others.
-    One pass per script (all of its installed languages together) is what reads Urdu
-    with an Arabic model installed, or Arabic when only Urdu was ticked: the LSTM has
-    the vocabulary of every language it is given.
+    Ticking a language does not narrow the search — it only decides which *script* is tried
+    first, and which language inside that script is ranked before the others. One pass per
+    script (all of its installed languages together) is what reads Urdu with an Arabic model
+    installed, or Arabic when only Urdu was ticked: the LSTM has the vocabulary of every
+    language it is given.
+
+    A script with more languages than one pass can hold is split into batches in priority
+    order — capping the Latin family at the first six left Turkish and Vietnamese to be read
+    by an English model (about 7 confidence points and every diacritic lost).
     """
     have = set(installed)
     pref = [c for c in preferred if c in have]
@@ -243,15 +250,32 @@ def script_passes(installed, preferred=(), limit: int = MAX_LANGS_PER_PASS) -> l
             seen.add(key)
             passes.append(list(codes))
 
+    def batch(codes):
+        """Split one script's languages into passes of ``limit``.
+
+        Every batch keeps the script's anchor language (English for Latin): the LSTM reads
+        Turkish and Vietnamese at ~96 with `eng` in the pass and ~92 without it — the shared
+        vocabulary is what makes the diacritics come out right.
+        """
+        if not codes:
+            return
+        script = SCRIPT_OF.get(codes[0], "")
+        priority = SCRIPT_PRIORITY.get(script, ())
+        anchor = next((c for c in priority if c in codes), codes[0])
+        codes = sorted(
+            codes,
+            key=lambda c: (0 if c in pref else 1, priority.index(c) if c in priority else 99, c),
+        )
+        for i in range(0, len(codes), limit):
+            chunk = codes[i : i + limit]
+            if anchor not in chunk:
+                chunk = [anchor] + chunk[: limit - 1]
+            add(chunk)
+
     ordered = [s for s in SCRIPT_ORDER if s in pref_scripts]
     ordered += [s for s in SCRIPT_ORDER if s not in pref_scripts]
     for script in ordered:
-        codes = [c for c in have if SCRIPT_OF.get(c) == script]
-        if not codes:
-            continue
-        priority = SCRIPT_PRIORITY.get(script, ())
-        codes.sort(key=lambda c: (0 if c in pref else 1, priority.index(c) if c in priority else 99, c))
-        add(codes[:limit])
+        batch([c for c in have if SCRIPT_OF.get(c) == script])
     # anything without a script mapping still gets a pass of its own
     add([c for c in have if c not in SCRIPT_OF][:limit])
     return passes

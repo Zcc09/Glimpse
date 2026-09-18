@@ -43,7 +43,8 @@ def _seed_languages(home: Path, codes) -> None:
             shutil.copy2(origin, dst / origin.name)
 
 
-OCR_LANGS = ("eng", "chi_sim", "chi_tra", "jpn", "kor", "rus", "ell", "heb", "hin", "ara", "urd", "fas")
+OCR_LANGS = ("eng", "chi_sim", "chi_tra", "jpn", "kor", "rus", "ell", "heb", "hin", "ara",
+             "urd", "fas", "tur", "vie", "deu", "fra", "spa", "nld", "pol", "ind")
 
 
 # ------------------------------------------------------------------ fixtures
@@ -90,6 +91,7 @@ def test_user_snip_reads_chinese(app, glimpse_home):
 
 
 # ------------------------------------------------------------------ multi-script matrix
+# (name, text, pixels, width, height, expected substring without diacritics)
 SCRIPTS = [
     ("chinese", "今天的天气很好，我想去新开的咖啡馆喝一杯。", 34, 1000, 160, "今天"),
     ("japanese", "今日はいい天気ですね。新しいカフェでコーヒーを飲みたいです。", 32, 1100, 160, "今日"),
@@ -99,7 +101,25 @@ SCRIPTS = [
     ("hebrew", "מזג האוויר היום נהדר. אני רוצה להזמין קפה בבית הקפה החדש.", 30, 1100, 170, "האוויר"),
     ("hindi", "आज मौसम बहुत अच्छा है। मैं नए कैफ़े में कॉफ़ी पीना चाहता हूँ।", 32, 1100, 170, "मौसम"),
     ("arabic", "الطقس جميل اليوم. أريد أن أطلب قهوة من المقهى الجديد.", 34, 1100, 170, "الطقس"),
+    # Persian at this exact size reads *nothing* at 1.0x and fine at 1.3x — the regression
+    # guard for the single-upscale-factor lottery that made the user's snips "not find text"
+    ("persian", "امروز هوا بسیار خوب است. می‌خواهم در کافه جدید قهوه بنوشم.", 32, 1100, 170, "قهوه"),
+    ("urdu", "آج موسم بہت اچھا ہے۔ میں نئے کیفے میں کافی پینا چاہتا ہوں۔", 32, 1100, 170, "موسم"),
+    # Turkish and Vietnamese only keep their diacritics when 'eng' anchors their pass
+    ("turkish", "Bugün hava çok güzel. Yeni kafede bir kahve içmek istiyorum.", 32, 1100, 170, "Bugün hava"),
+    ("vietnamese", "Hôm nay thời tiết rất đẹp. Tôi muốn uống cà phê ở quán mới.", 32, 1100, 170, "thời tiết"),
+    # Latin batches (expectations avoid diacritics: the LSTM drops those on occasion,
+    # exactly like Windows OCR, and the read is still correct)
+    ("german", "Das Wetter ist heute wunderschön. Ich möchte einen Kaffee bestellen.", 32, 1100, 170, "Das Wetter ist heute"),
+    ("french", "Le temps est magnifique aujourd'hui. Je voudrais commander un café.", 32, 1100, 170, "magnifique"),
+    ("spanish", "El tiempo es magnífico hoy. Quiero pedir un café, por favor.", 32, 1100, 170, "Quiero pedir"),
 ]
+
+LATIN_CASES = {"turkish", "vietnamese", "german", "french", "spanish"}
+NEEDS = {"chinese": "chi_sim", "japanese": "jpn", "korean": "kor", "russian": "rus",
+         "greek": "ell", "hebrew": "heb", "hindi": "hin", "arabic": "ara",
+         "persian": "fas", "urdu": "urd", "turkish": "tur", "vietnamese": "vie",
+         "german": "deu", "french": "fra", "spanish": "spa"}
 
 
 @pytest.mark.parametrize("name,text,px,w,h,expect", SCRIPTS)
@@ -110,16 +130,20 @@ def test_script_is_read(app, glimpse_home, name, text, px, w, h, expect):
 
     _seed_languages(glimpse_home, OCR_LANGS)
     installed = set(L.installed_languages())
-    needed = {"chinese": "chi_sim", "japanese": "jpn", "korean": "kor", "russian": "rus",
-              "greek": "ell", "hebrew": "heb", "hindi": "hin", "arabic": "ara"}[name]
+    needed = NEEDS[name]
     if needed not in installed:
         pytest.skip(f"{needed}.traineddata not installed")
 
     res = recognize(_render(text, px, w, h), engine="auto", tess_languages=["eng", "ara"], all_languages=True)
     flat = (res.text or "").replace(" ", "")
-    assert expect in flat, f"{name}: {res.text!r}"
-    assert res.confidence >= 55, f"{name}: confidence {res.confidence}"
-    assert res.engine == "tesseract", f"{name}: engine {res.engine}"
+    assert expect.replace(" ", "") in flat, f"{name}: {res.text!r}"
+    if res.engine == "tesseract":       # Windows OCR does not report a confidence
+        assert res.confidence >= 55, f"{name}: confidence {res.confidence}"
+    if name in LATIN_CASES:
+        assert res.engine in ("windows", "tesseract"), f"{name}: engine {res.engine}"
+    else:
+        # Windows has no pack for these scripts on this machine, so Tesseract must have won
+        assert res.engine == "tesseract", f"{name}: engine {res.engine}"
 
 
 def test_script_passes_cover_every_installed_language(glimpse_home):

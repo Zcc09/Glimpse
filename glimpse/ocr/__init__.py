@@ -146,18 +146,44 @@ def _scaled(image: QImage, factor: float) -> QImage:
     )
 
 
+def _ascii_only(text: str) -> bool:
+    """True when the text has no accented/symbol letters beyond plain ASCII."""
+    return all(ord(c) < 128 for c in (text or ""))
+
+
+def _english_packs_only() -> bool:
+    """True when every installed Windows OCR pack is English (so accented output is a guess)."""
+    packs = [str(p).lower() for p in available_languages()]
+    return bool(packs) and all(p.startswith("en") for p in packs)
+
+
 def _invert(image: QImage) -> QImage:
     img = image.convertToFormat(QImage.Format.Format_RGB32).copy()
     img.invertPixels()
     return img
 
 
+# Tesseract's LSTM is oddly sensitive to the *exact* pixel size of a crop: an Arabic-script
+# line that reads at 1.0x and 1.3x returns nothing at all at 1.8x and reads again at 2.5x
+# (same image, same model — the line-finding just misses). One upscale factor is a lottery;
+# try the sizes in the order that behaves best for real snips.
+VARIANT_SCALES = (1.0, 1.3, 2.5)
+
+
 def prepare_variants(image: QImage) -> list[QImage]:
-    """The crop plus the usual rescue attempts: extra upscale, dark-mode inversion."""
-    variants = [image, _scaled(image, 1.8)]
-    if _mean_luma(image) < 110:  # dark-mode UI: engines expect dark text on light
-        variants = [_invert(image), image, _invert(_scaled(image, 1.8)), _scaled(image, 1.8)]
-    return variants
+    """The crop plus rescue attempts: other sizes, dark-mode inversion.
+
+    Dark-mode crops are inverted *and* kept as-is: a dim UI screenshot read as dark-on-light
+    is the single most common "no text found" cause, but some engines prefer the original.
+    """
+    variants: list[QImage] = []
+    dark = _mean_luma(image) < 110
+    for factor in VARIANT_SCALES:
+        base = image if factor == 1.0 else _scaled(image, factor)
+        if dark:
+            variants.append(_invert(base))
+        variants.append(base)
+    return variants[:4]
 
 
 def _prepare_png(image: QImage, min_side: int = 90, upscale_to: int = 1000, max_dim: int = 2500) -> bytes:
@@ -269,9 +295,16 @@ def _recognize(
     except Exception as e:  # noqa: BLE001
         log.info("auto OCR: Windows engine unavailable (%s)", e)
     win_score = score_text(win.text) if win else -1.0
-    # "it read several words" is not proof: Windows renders foreign scripts as
-    # confident Latin noise, so only stop early when the read also looks clean
-    if win is not None and win_score >= 60.0 and junk_ratio(win.text) < 0.25:
+    # "it read several words" is not proof: Windows renders foreign scripts as confident
+    # Latin noise, so only stop early when the read also looks clean — and when an
+    # English-only pack returns accented letters ('Höm nay thdi tiét', 'Bugün hava qok'),
+    # it is guessing at a language it does not have, so Tesseract gets a turn.
+    if (
+        win is not None
+        and win_score >= 60.0
+        and junk_ratio(win.text) < 0.25
+        and (_ascii_only(win.text) or not _english_packs_only())
+    ):
         return win
 
     try:
@@ -310,6 +343,16 @@ def _recognize(
     win_ok, tess_ok = is_plausible(win.text), is_plausible(tess.text)
     if tess_ok != win_ok:
         return tess if tess_ok else win
+    # A very sure Tesseract read (>=95 %) beats Windows' read when Windows produced accented
+    # text that its (English-only) pack cannot really have read: 'Bugün hava çok güzel' comes
+    # back as 'Bugün hava qok güzel'. A plain-ASCII Windows read is trustworthy and fast, so
+    # it keeps winning — no reason to spend a second engine on it.
+    if (
+        not _ascii_only(win.text)
+        and tess.confidence >= 95.0
+        and score_text(tess.text) >= score_text(win.text) * 0.95
+    ):
+        return tess
     if score_text(tess.text) > score_text(win.text) * 1.25:
         return tess
     return win
