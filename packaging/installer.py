@@ -172,14 +172,23 @@ def detect_existing_install() -> tuple[str | None, str | None]:
 
 
 def resolve_payload() -> tuple[str, str, str]:
-    """(payload dir containing Glimpse.exe, .ico path, .png path for the wizard header)."""
+    """(payload dir containing Glimpse.exe, .ico path, .png path for the wizard header).
+
+    In a source run both bundle/ and dist/ can hold a payload; the *newest* Glimpse.exe
+    wins, so a stale bundle/ can never silently ship an old build (it did once).
+    """
     if getattr(sys, "frozen", False):
         base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
     else:
-        here = os.path.dirname(os.path.abspath(__file__))
-        base = os.path.join(os.path.dirname(here), "bundle")
-        if not os.path.isdir(os.path.join(base, APP_NAME)):
-            base = os.path.join(os.path.dirname(here), "dist")
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        options = [os.path.join(root, name) for name in ("bundle", "dist")]
+        have = [b for b in options if os.path.isfile(os.path.join(b, APP_NAME, f"{APP_NAME}.exe"))]
+        if have:
+            base = max(have, key=lambda b: os.path.getmtime(os.path.join(b, APP_NAME, f"{APP_NAME}.exe")))
+            if len(have) > 1:
+                print(f"setup: payload candidates {have} → using {base} (newest {APP_NAME}.exe)")
+        else:
+            base = options[0]
     src = os.path.join(base, APP_NAME)
     icon = os.path.join(base, ICON_NAME)
     if not os.path.isfile(icon):

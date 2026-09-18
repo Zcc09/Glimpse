@@ -12,6 +12,7 @@ step "assets"
 "$PY" scripts/make_assets.py | tail -2 || FAIL=1
 
 step "app build (PyInstaller onedir)"
+rm -rf bundle  # a stale bundle/ payload would shadow the fresh dist/ build in installer tests
 "$PY" -m PyInstaller --noconfirm --clean packaging/glimpse.spec --distpath dist --workpath build > build/app_build.log 2>&1 \
   && echo "app built: $(du -sh dist/Glimpse | cut -f1)" || { echo "APP BUILD FAILED (see build/app_build.log)"; tail -20 build/app_build.log; exit 1; }
 
@@ -28,7 +29,7 @@ step "wizard walk test (from source)"
 "$PY" packaging/test_wizard.py packaging/installer.py || FAIL=1
 
 step "bundle + Setup.exe"
-rm -rf bundle && mkdir -p bundle && cp -r dist/Glimpse bundle/Glimpse
+mkdir -p bundle && cp -r dist/Glimpse bundle/Glimpse
 "$PY" -m PyInstaller --noconfirm --clean packaging/glimpse-setup.spec --distpath dist --workpath build > build/setup_build.log 2>&1 \
   && echo "setup built: $(ls -la dist/Glimpse-Setup.exe | awk '{print $5}') bytes" || { echo "SETUP BUILD FAILED (see build/setup_build.log)"; tail -20 build/setup_build.log; exit 1; }
 
