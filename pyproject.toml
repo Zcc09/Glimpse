@@ -1,0 +1,45 @@
+[project]
+name = "glimpse"
+version = "0.1.0"
+description = "Google Lens for Windows — snip any area of the screen to read, translate, visually search, scan codes, and identify songs from system audio."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Mo" }]
+dependencies = [
+    "PySide6>=6.7",
+    "requests>=2.31",
+    "numpy>=1.26",
+    "deep-translator>=1.11.4",
+    "shazamio>=0.7.0",
+    "zxing-cpp>=2.2.1",
+    "PyAudioWPatch>=0.2.12.1",
+    "winsdk>=1.0.0b10",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pyinstaller>=6.6",
+    "pillow>=10.0",
+    "qrcode>=7.4",
+    "pytest>=8.0",
+]
+
+[project.scripts]
+glimpse = "glimpse.app:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["glimpse"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not live_desktop'"
+markers = [
+    "network: hits the internet",
+    "audio: needs a WASAPI loopback device",
+    "live_desktop: drives the real desktop with synthetic input (opt in: -m live_desktop)",
+]

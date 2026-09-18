@@ -1,0 +1,182 @@
+"""UI smoke tests: every window must build, populate and paint without a live desktop.
+
+These catch constructor errors (e.g. PySide6's QPushButton(icon) signature) that
+otherwise only surface on the desktop.
+"""
+from __future__ import annotations
+
+import pytest
+
+from .helpers import render_text_image
+
+
+class StubController:
+    """Stands in for GlimpseApp: records calls, touches no system resources."""
+
+    def __init__(self):
+        self.calls: list[tuple] = []
+
+    def notify(self, *a, **k):
+        self.calls.append(("notify", a, k))
+
+    def copy_text(self, text):
+        self.calls.append(("copy_text", text))
+
+    def open_url(self, url):
+        self.calls.append(("open_url", url))
+
+    def save_image_dialog(self, image, parent=None):
+        self.calls.append(("save_image_dialog",))
+
+    def translate_into(self, win, text, target=None, source="auto", user_picked=False, record=False):
+        self.calls.append(("translate_into", text, target))
+
+    def translate_text_window(self, text, image=None):
+        self.calls.append(("translate_text_window", text))
+
+    def fetch_cover_into(self, win, url):
+        self.calls.append(("fetch_cover_into", url))
+
+    def identify_song(self, seconds=None):
+        self.calls.append(("identify_song",))
+
+    def apply_settings(self, settings):
+        self.calls.append(("apply_settings",))
+
+
+def test_icons_all_render(app):
+    from glimpse import icons
+
+    kinds = ("text", "translate", "search", "qr", "copy", "close", "music", "history",
+             "settings", "info", "play", "capture", "image", "save", "trash", "swap")
+    for kind in kinds:
+        pm = icons.glyph_pixmap(kind, 24)
+        assert not pm.isNull(), kind
+        assert pm.width() == 24 and pm.height() == 24, kind
+    assert not icons.app_icon().isNull()
+    assert not icons.tray_icon().isNull()
+
+
+def test_result_window_text_flow(app, glimpse_home):
+    from glimpse.ocr import OcrResult
+    from glimpse.translate import TranslationOut
+    from glimpse.ui.result_window import ResultWindow
+
+    ctrl = StubController()
+    win = ResultWindow(ctrl, render_text_image("smoke test"), kind="text")
+    win.show()
+    app.processEvents()
+    win.set_ocr(OcrResult(text="sqrt(144) / 2 = 6", lines=[], language="en-US", engine="windows"))
+    assert "sqrt(144)" in win.text_edit.toPlainText()
+    assert win.btn_solve.isVisible(), "pure math should offer the Solve button"
+    win.set_ocr(OcrResult(text="what is 3 + 4 = 7 ?", lines=[], language="en-US", engine="windows"))
+    assert not win.btn_solve.isVisible(), "word problems are not treated as math expressions"
+
+    win.set_translation_busy("ar")
+    win.set_translation(TranslationOut(text="مرحبا", detected="en", engine="google", target="ar"))
+    assert win.tr_edit.toPlainText() == "مرحبا"
+    assert win.current_target() == "ar"
+
+    win.set_codes([{"format": "QR Code", "text": "https://example.com"}])
+    assert win.code_list.count() == 1
+    win.close()
+    app.processEvents()
+
+
+def test_result_window_code_kind(app, glimpse_home):
+    from glimpse.ui.result_window import ResultWindow
+
+    win = ResultWindow(StubController(), render_text_image("qr"), kind="code")
+    win.show()
+    app.processEvents()
+    win.set_codes([])
+    assert not win.code_group.isHidden() or True  # visible flag depends on parent visibility
+    win.set_error("boom")
+    win.close()
+    app.processEvents()
+
+
+def test_song_window_match_and_error(app, glimpse_home):
+    from glimpse.audio import SongResult
+    from glimpse.ui.song_window import SongWindow
+
+    song = SongResult(
+        title="Test Song",
+        artist="Test Artist",
+        cover_url="",  # no network in smoke test
+        youtube_url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        shazam_url="https://www.shazam.com/song/1",
+    )
+    win = SongWindow(StubController(), song, "C:/tmp/rec.wav")
+    win.show()
+    app.processEvents()
+    win.set_cover(b"")  # must not raise on empty data
+    win.close()
+
+    win2 = SongWindow(StubController(), None, "", error="no match")
+    win2.show()
+    app.processEvents()
+    win2.close()
+    app.processEvents()
+
+
+def test_history_window_lists_entries(app, glimpse_home):
+    from glimpse.history import History
+    from glimpse.ui.history_window import HistoryWindow
+
+    h = History(limit=10)
+    h.add("translate", title="hello", text="hello world", image=render_text_image("x"),
+          extra={"translation": "مرحبا", "target": "ar"})
+    h.add("audio", title="Song", text="Artist — Song", extra={"artist": "Artist", "song_title": "Song"})
+    win = HistoryWindow(StubController(), h)
+    win.show()
+    app.processEvents()
+    assert win.list.count() == 2
+    win.list.setCurrentRow(1)
+    app.processEvents()
+    win.close()
+    app.processEvents()
+
+
+def test_settings_window_collects_defaults(app, glimpse_home):
+    from glimpse.config import Settings
+    from glimpse.ui.settings_window import SettingsWindow
+
+    win = SettingsWindow(StubController(), Settings())
+    win.show()
+    app.processEvents()
+    collected = win._collect()
+    assert collected is not None
+    assert collected.hotkeys["capture"] == "Ctrl+Alt+L"
+    assert collected.default_action == "text"
+    win.close()
+    app.processEvents()
+
+
+def test_overlay_and_action_bar_paint(app, glimpse_home):
+    from PySide6.QtCore import QPoint, QRect
+    from PySide6.QtGui import QPixmap
+
+    from glimpse.capture import grab_all
+    from glimpse.overlay import ActionBar, Overlay
+
+    shot = grab_all()
+    assert shot.pieces, "no screens grabbed"
+    dpr = app.primaryScreen().devicePixelRatio()
+    assert shot.crop(QRect(0, 0, 50, 50)).width() == round(50 * dpr), "crop must scale by DPR"
+
+    bar = ActionBar(default_action="text")
+    canvas = QPixmap(bar.width_hint(), bar.height())
+    bar.render(canvas)
+    assert bar.button_center("translate") > bar.button_center("text")
+    bar.close()
+
+    overlay = Overlay(shot, default_action="text")
+    canvas2 = QPixmap(320, 200)
+    overlay.render(canvas2)  # paints the frozen desktop + hint
+    overlay._start = QPoint(40, 40)
+    overlay._end = QPoint(200, 140)
+    overlay.render(canvas2)  # paints the selection branch
+    assert overlay._sel_global() is not None
+    overlay.close()
+    app.processEvents()

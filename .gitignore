@@ -1,0 +1,8 @@
+.venv/
+build/
+dist/
+bundle/
+__pycache__/
+*.pyc
+.pytest_cache/
+assets/_generated/
