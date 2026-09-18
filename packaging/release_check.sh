@@ -29,7 +29,11 @@ step "wizard walk test (from source)"
 "$PY" packaging/test_wizard.py packaging/installer.py || FAIL=1
 
 step "bundle + Setup.exe"
-mkdir -p bundle && cp -r dist/Glimpse bundle/Glimpse
+rm -rf bundle && mkdir -p bundle && cp -r dist/Glimpse bundle/Glimpse
+if [ ! -f bundle/Glimpse/Glimpse.exe ] || [ -d bundle/Glimpse/Glimpse ]; then
+  echo "PAYLOAD BROKEN: bundle/Glimpse/Glimpse.exe=$([ -f bundle/Glimpse/Glimpse.exe ] && echo yes || echo no) nested=$([ -d bundle/Glimpse/Glimpse ] && echo yes || echo no)"
+  exit 1
+fi
 "$PY" -m PyInstaller --noconfirm --clean packaging/glimpse-setup.spec --distpath dist --workpath build > build/setup_build.log 2>&1 \
   && echo "setup built: $(ls -la dist/Glimpse-Setup.exe | awk '{print $5}') bytes" || { echo "SETUP BUILD FAILED (see build/setup_build.log)"; tail -20 build/setup_build.log; exit 1; }
 

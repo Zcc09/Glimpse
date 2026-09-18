@@ -15,6 +15,8 @@ echo "== bundle =="
 rm -rf bundle
 mkdir -p bundle
 cp -r dist/Glimpse bundle/Glimpse
+[ -f bundle/Glimpse/Glimpse.exe ] || { echo "payload incomplete: bundle/Glimpse/Glimpse.exe missing"; exit 1; }
+[ -d bundle/Glimpse/Glimpse ] && { echo "payload nested inside itself — aborting"; exit 1; }
 du -sh bundle/Glimpse
 
 echo "== setup (onefile) =="

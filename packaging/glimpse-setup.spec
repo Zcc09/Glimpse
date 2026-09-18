@@ -11,6 +11,16 @@ ROOT = os.path.dirname(SPEC_DIR)
 payload = os.path.join(ROOT, "bundle", "Glimpse")
 if not os.path.isdir(payload):
     raise SystemExit(f"payload missing: {payload} (run packaging/build.sh, or copy dist/Glimpse into bundle/)")
+# Guard against the classic cp trap: `cp -r dist/Glimpse bundle/Glimpse` when
+# bundle/Glimpse already exists nests the payload inside itself, and the Setup.exe
+# then extracts to _MEI/Glimpse/Glimpse/... and fails with "payload missing".
+if not os.path.isfile(os.path.join(payload, "Glimpse.exe")):
+    raise SystemExit(f"payload incomplete: {payload}\\Glimpse.exe missing (stale or partial copy)")
+if os.path.isdir(os.path.join(payload, "Glimpse")):
+    raise SystemExit(
+        f"payload nested: {payload}\\Glimpse exists — the copy nested the payload inside "
+        "itself (remove bundle/ and copy again)"
+    )
 
 a = Analysis(
     [os.path.join(SPEC_DIR, "installer.py")],
